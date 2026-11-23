@@ -65,6 +65,17 @@ test('los tipos publicados no exponen `pedir` ni `Operacion`', () => {
   }
 });
 
+test('publicar compila antes (prepack) y repository va en la forma explícita que compara la procedencia de npm', () => {
+  expect(PAQUETE.scripts.prepack).toBe('npm run build');
+  expect(PAQUETE.repository).toEqual({ type: 'git', url: 'git+https://github.com/enrolamiento/enrolamiento-node.git' });
+});
+
+test('la integración continua prueba el piso documentado de Node, 22.12.0', () => {
+  expect(PAQUETE.engines.node).toBe('>=22.12');
+  const matriz = /node: \[([^\]]*)\]/.exec(readFileSync('.github/workflows/ci.yml', 'utf8'))?.[1] ?? '';
+  expect(matriz.split(',').map((version) => version.trim().replace(/^['"]|['"]$/g, ''))).toContain('22.12.0');
+});
+
 test('sin dependencias de runtime', () => {
   expect(Object.keys(PAQUETE.dependencies ?? {})).toEqual([]);
   expect(Object.keys(PAQUETE.peerDependencies ?? {})).toEqual([]);

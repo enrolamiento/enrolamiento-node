@@ -17,7 +17,10 @@
   "bugs": {
     "email": "soporte@enrolamiento.cl"
   },
-  "repository": "github:enrolamiento/enrolamiento-node",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/enrolamiento/enrolamiento-node.git"
+  },
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -40,6 +43,7 @@
     "contract:pull": "node scripts/pull-contract.mjs",
     "generate": "node scripts/generate.mjs",
     "build": "tsc -p .",
+    "prepack": "npm run build",
     "test": "vitest run --exclude 'test/smoke/**' --exclude test/package.test.ts --exclude test/readme.test.ts",
     "test:smoke": "vitest run --dir test/smoke",
     "typecheck": "tsc -p tsconfig.test.json",
