@@ -1,0 +1,49 @@
+name: Release
+
+# Publishes to npm when a version tag is pushed. Authentication is npm trusted publishing
+# (OIDC): there is no token in this repository. The trusted publisher is configured on
+# npmjs.com for this repository and this workflow file name; renaming the file breaks it.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  id-token: write # required for trusted publishing
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Pinned by commit: this job can publish the package.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24 # trusted publishing needs Node >= 22.14 and npm >= 11.5.1
+          registry-url: 'https://registry.npmjs.org'
+      - name: The tag is the version in package.json
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::The tag $GITHUB_REF_NAME does not match package.json version $version."
+            exit 1
+          fi
+      - name: npm is recent enough for trusted publishing
+        run: |
+          node -e "const [a,b,c]=process.argv[1].split('.').map(Number); if (a<11||(a===11&&(b<5||(b===5&&c<1)))) { console.error('npm '+process.argv[1]+' is older than 11.5.1'); process.exit(1) }" "$(npm --version)"
+      - run: npm ci --ignore-scripts
+      - name: Generated code matches the contract
+        run: npm run generate && git diff --exit-code src/generated test/smoke/examples.generated.ts
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run test:smoke
+      - run: npm run check:package
+      - run: npm run test:package
+      - run: npm publish --access public

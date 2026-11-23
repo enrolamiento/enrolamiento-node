@@ -444,3 +444,12 @@ este repositorio, no en quien instala el paquete.
 El flujo semanal `Contract drift` compara el contrato publicado con la copia del repositorio. GitHub desactiva los
 flujos programados de un repositorio público sin actividad durante 60 días: si eso pasa, reactívelo en la pestaña
 **Actions**.
+
+### Publicar una versión
+
+1. Suba `version` en `package.json` y `src/version.ts` (una prueba exige que coincidan) y agregue su entrada en
+   `CHANGELOG.md`.
+2. Con la integración continua en verde sobre `main`, etiquete el commit: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+3. El flujo `Release` vuelve a correr todas las pruebas y publica en npm. No usa ningún token: se autentica con
+   la publicación de confianza de npm (OIDC), configurada en npmjs.com para este repositorio y para el archivo
+   `release.yml`. Renombrar ese archivo la rompe.
