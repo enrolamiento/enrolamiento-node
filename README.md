@@ -133,9 +133,10 @@ credenciales; lo que lance llega como `error.cause` de un `ErrorDeConexion`.
 
 ## Errores
 
-Todo lo que lanza el SDK hereda de `EnrolamientoError`, también ante un argumento con otra forma: lo que falla
-antes de llamar a la API es `ErrorDeConfiguracion`, y ningún mensaje copia un valor recibido (de un texto, dice
-solo su largo). Cuando la API respondió con un status que no es 2xx, el
+Lo que lanza el SDK hereda de `EnrolamientoError`, también ante un argumento con otra forma: lo que falla
+antes de llamar a la API es `ErrorDeConfiguracion`. Ningún mensaje copia el texto de un parámetro (de un texto
+dice solo su largo; sí nombra las claves y muestra los números). La excepción es un `fetch` propio que no
+devuelva una `Response`: lo que eso provoque sale tal cual. Cuando la API respondió con un status que no es 2xx, el
 error hereda además de `ErrorDeApi`, con `status`, `codigo`, `subcodigo`, `mensaje`, `reintentable` (la cabecera
 `X-Reintentable`), `cabeceras`, `cuerpo` y `operacion`.
 
@@ -204,7 +205,7 @@ Dos opciones lo regulan:
 
 ### Por qué `caf.descargar` no se repite solo
 
-`caf.descargar` timbra folios en el SII. Si falla la red, vence `timeoutMs` o llega un 504, el primer intento pudo
+`caf.descargar` timbra folios en el SII. Si falla la red, vence `timeoutMs` o llega un 504 sin `X-Codigo-Error`, el primer intento pudo
 timbrar un CAF aunque la respuesta no llegara, y repetirlo timbraría otro. Por eso el SDK no lo repite tras esos
 errores: los lanza. Haga esto:
 
