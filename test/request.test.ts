@@ -144,9 +144,9 @@ describe('arma el pedido', () => {
     expect(f.pedidos[1]!.url).toBe('https://api.enrolamiento.cl/v1/x/a%2Fb%3Fc%23d');
   });
 
-  test('un parámetro de ruta vacío, null o undefined lanza ErrorDeConfiguracion sin llamar a fetch', async () => {
+  test('un parámetro de ruta vacío, null, undefined, "." o ".." lanza ErrorDeConfiguracion sin llamar a fetch', async () => {
     const f = fetchFalso();
-    for (const rut of ['', null, undefined]) {
+    for (const rut of ['', null, undefined, '.', '..']) {
       const promesa = cliente(f).pedir(CAF_DESCARGAR, { rut, tipoDocumento: 33, cantidad: 10, ambiente: 0 });
       await expect(promesa).rejects.toThrow(ErrorDeConfiguracion);
       await expect(promesa).rejects.toThrow(/rut/);
@@ -155,6 +155,27 @@ describe('arma el pedido', () => {
       ErrorDeConfiguracion,
     );
     expect(f.fn).not.toHaveBeenCalled();
+  });
+
+  test('un parámetro de ruta "." o ".." no borra el ambiente de la ruta: lanza ErrorDeConfiguracion sin llamar a fetch', async () => {
+    const f = fetchFalso();
+    for (const rutUsuario of ['.', '..']) {
+      const promesa = cliente(f).pedir(EMPRESAS_PERMISOS, { rutEmpresa: '1-9', rutUsuario, ambiente: 0 });
+      await expect(promesa).rejects.toThrow(ErrorDeConfiguracion);
+      await expect(promesa).rejects.toThrow(/rutUsuario/);
+    }
+    expect(f.fn).not.toHaveBeenCalled();
+  });
+
+  test('la URL que llega a fetch conserva cada segmento de la ruta', async () => {
+    const f = fetchFalso();
+    await cliente(f).pedir(EMPRESAS_PERMISOS, { rutEmpresa: '1.234.567-K', rutUsuario: '.9-7', ambiente: 0 });
+    await cliente(f).pedir(CAF_DESCARGAR, { rut: '...', tipoDocumento: 33, cantidad: 10, ambiente: 0 });
+    const segmentos = f.pedidos.map((p) => new URL(p.url).pathname.split('/'));
+    expect(segmentos).toEqual([
+      ['', 'v1', 'empresas', '1.234.567-K', 'permisos', '.9-7', '0'],
+      ['', 'v1', 'caf', '...', 'descargar', '33', '10'],
+    ]);
   });
 
   test('lo que no es de ruta ni de query va al cuerpo JSON con Content-Type', async () => {
@@ -290,6 +311,27 @@ describe('ambiente', () => {
     expect(f.fn).not.toHaveBeenCalled();
   });
 
+  test('el mensaje de un ambiente inválido no copia valores largos ni lanza otra cosa que ErrorDeConfiguracion', async () => {
+    const f = fetchFalso();
+    const largo = 'x'.repeat(200);
+    const conLargo: unknown = await cliente(f).pedir(ENQUERY, { rut: '1-9', ambiente: largo }).catch((e: unknown) => e);
+    expect(conLargo).toBeInstanceOf(ErrorDeConfiguracion);
+    expect((conLargo as Error).message).not.toContain('xxxxxxxxxxxxxxxxxxxxx');
+    expect((conLargo as Error).message).toMatch(/string/);
+
+    const sinPrototipo: unknown = await cliente(f)
+      .pedir(ENQUERY, { rut: '1-9', ambiente: Object.create(null) })
+      .catch((e: unknown) => e);
+    expect(sinPrototipo).toBeInstanceOf(ErrorDeConfiguracion);
+    expect((sinPrototipo as Error).message).toMatch(/object/);
+
+    const corto: unknown = await cliente(f).pedir(ENQUERY, { rut: '1-9', ambiente: 'abc' }).catch((e: unknown) => e);
+    expect((corto as Error).message).toContain('"abc"');
+    const numero: unknown = await cliente(f).pedir(ENQUERY, { rut: '1-9', ambiente: 2 }).catch((e: unknown) => e);
+    expect((numero as Error).message).toMatch(/number 2/);
+    expect(f.fn).not.toHaveBeenCalled();
+  });
+
   test('ambiente en ruta sin valor omite el segmento', async () => {
     const f = fetchFalso();
     await cliente(f).pedir(EMPRESAS_PERMISOS, { rutEmpresa: '1-9', rutUsuario: '2-7' });
@@ -383,6 +425,32 @@ describe('respuesta', () => {
     const error = await resultado;
     expect(error).toBeInstanceOf(ErrorDeConexion);
     expect(error).toMatchObject({ tiempoAgotado: true, operacion: 'prueba_v1_operacion' });
+  });
+
+  test('un timeoutMs que no es un número de 1 a 2147483647 lanza ErrorDeConfiguracion sin llamar a fetch ni escribir en consola', async () => {
+    const f = fetchFalso();
+    const avisos = vi.fn();
+    process.on('warning', avisos);
+    try {
+      for (const timeoutMs of [Infinity, -Infinity, Number.NaN, 0, -1, 0.5, 2147483648, '1000']) {
+        const delPedido = cliente(f).pedir(operacion(), {}, { timeoutMs: timeoutMs as number });
+        await expect(delPedido).rejects.toThrow(ErrorDeConfiguracion);
+        await expect(delPedido).rejects.toThrow(/timeoutMs/);
+        const delCliente = cliente(f, { timeoutMs: timeoutMs as number }).pedir(operacion(), {});
+        await expect(delCliente).rejects.toThrow(ErrorDeConfiguracion);
+      }
+      expect(f.fn).not.toHaveBeenCalled();
+
+      // Los extremos válidos llegan a fetch.
+      await cliente(f).pedir(operacion(), {}, { timeoutMs: 1 });
+      await cliente(f).pedir(operacion(), {}, { timeoutMs: 2147483647 });
+      expect(f.fn).toHaveBeenCalledTimes(2);
+      // Dar una vuelta para que un TimeoutOverflowWarning, si lo hubiera, se emita.
+      await new Promise((resolver) => setImmediate(resolver));
+      expect(avisos).not.toHaveBeenCalled();
+    } finally {
+      process.off('warning', avisos);
+    }
   });
 
   test('timeoutMs del cliente se aplica si el pedido no trae el suyo', async () => {

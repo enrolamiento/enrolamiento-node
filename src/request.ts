@@ -94,6 +94,8 @@ export class PromesaDeApi<T> extends Promise<T> {
 
 const URL_BASE = 'https://api.enrolamiento.cl';
 const TIMEOUT_MS = 65000;
+/** El mayor plazo que acepta `setTimeout`; uno mayor dispara de inmediato y Node avisa por consola. */
+const TIMEOUT_MAXIMO_MS = 2147483647;
 
 /** Un pedido listo para enviar. Se arma una vez y sirve para cada intento. */
 interface PedidoArmado {
@@ -101,6 +103,8 @@ interface PedidoArmado {
   metodo: Operacion['metodo'];
   cabeceras: Headers;
   cuerpo: string | undefined;
+  /** Tiempo de espera de cada intento, ya validado. */
+  timeoutMs: number;
 }
 
 /** Arma y envía los pedidos a la API. `Enrolamiento` lo extiende con un método por operación. */
@@ -139,7 +143,12 @@ export class Nucleo {
       if (valor === undefined || valor === null || valor === '') {
         throw new ErrorDeConfiguracion(`${op.id}: falta el parámetro de ruta \`${nombre}\`.`);
       }
-      const codificado = encodeURIComponent(String(valor));
+      const texto = String(valor);
+      // encodeURIComponent deja los puntos y el parser de URL resuelve `.` y `..`: cambiarían el endpoint.
+      if (texto === '.' || texto === '..') {
+        throw new ErrorDeConfiguracion(`${op.id}: el parámetro de ruta \`${nombre}\` no puede ser "." ni "..".`);
+      }
+      const codificado = encodeURIComponent(texto);
       ruta = ruta.replace(`{${nombre}}`, () => codificado);
     }
 
@@ -175,7 +184,8 @@ export class Nucleo {
     const urlBase = (this.#opciones.urlBase ?? URL_BASE).replace(/\/+$/, '');
     const textoQuery = query.toString();
     const url = `${urlBase}${ruta}${textoQuery === '' ? '' : `?${textoQuery}`}`;
-    return { url, metodo: op.metodo, cabeceras, cuerpo };
+    const timeoutMs = resolverTimeout(op, opciones.timeoutMs, this.#opciones.timeoutMs);
+    return { url, metodo: op.metodo, cabeceras, cuerpo, timeoutMs };
   }
 
   /** La cabecera `Authorization`. Se resuelve en el primer pedido para que el paquete se importe sin entorno. */
@@ -195,7 +205,7 @@ export class Nucleo {
 
   /** Un intento: envía el pedido y lee la respuesta. El tiempo de espera cubre también la lectura del cuerpo. */
   async #intentar<T>(op: Operacion, pedido: PedidoArmado, opciones: OpcionesDePedido): Promise<DatosYRespuesta<T>> {
-    const timeoutMs = opciones.timeoutMs ?? this.#opciones.timeoutMs ?? TIMEOUT_MS;
+    const { timeoutMs } = pedido;
     const controlador = new AbortController();
     let vencido = false;
     const temporizador = setTimeout(() => {
@@ -240,12 +250,33 @@ function resolverAmbiente(op: Operacion, params: Record<string, unknown>, delCli
     return undefined;
   }
   if (valor !== 0 && valor !== 1) {
-    const recibido = typeof valor === 'string' ? JSON.stringify(valor) : String(valor);
     throw new ErrorDeConfiguracion(
-      `${op.id}: \`ambiente\` debe ser 0 (homologación) o 1 (producción); se recibió ${recibido}.`,
+      `${op.id}: \`ambiente\` debe ser 0 (homologación) o 1 (producción); se recibió ${describir(valor)}.`,
     );
   }
   return valor;
+}
+
+/** El tiempo de espera de cada intento: el de la llamada, el del cliente o 65000. Un número finito de 1 a 2147483647. */
+function resolverTimeout(op: Operacion, delPedido: unknown, delCliente: unknown): number {
+  const valor = delPedido !== undefined ? delPedido : delCliente !== undefined ? delCliente : TIMEOUT_MS;
+  if (typeof valor !== 'number' || !Number.isFinite(valor) || valor < 1 || valor > TIMEOUT_MAXIMO_MS) {
+    throw new ErrorDeConfiguracion(
+      `${op.id}: \`timeoutMs\` debe ser un número de 1 a ${TIMEOUT_MAXIMO_MS}; se recibió ${describir(valor)}.`,
+    );
+  }
+  return valor;
+}
+
+/**
+ * Describe un valor recibido para un mensaje de error sin copiarlo entero: un valor fuera de lugar puede ser un
+ * secreto. Da el tipo y, solo para números y textos de hasta 20 caracteres, el valor. Nunca lanza.
+ */
+function describir(valor: unknown): string {
+  if (valor === null) return 'null';
+  if (typeof valor === 'number') return `number ${String(valor)}`;
+  if (typeof valor === 'string' && valor.length <= 20) return `string ${JSON.stringify(valor)}`;
+  return typeof valor;
 }
 
 /** El cuerpo de una respuesta 2xx: JSON si lo es, el texto si no, `undefined` si viene vacío. */
