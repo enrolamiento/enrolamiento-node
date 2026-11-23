@@ -4,7 +4,8 @@
     "noEmit": true,
     "rootDir": ".",
     "allowJs": true,
-    "checkJs": true
+    "checkJs": true,
+    "skipLibCheck": true
   },
   "include": ["src", "test", "scripts"]
 }

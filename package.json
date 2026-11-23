@@ -22,12 +22,14 @@
   ],
   "scripts": {
     "contract:pull": "node scripts/pull-contract.mjs",
+    "generate": "node scripts/generate.mjs",
     "build": "tsc -p .",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.test.json"
   },
   "devDependencies": {
     "@types/node": "22.20.5",
+    "openapi-typescript": "7.13.0",
     "typescript": "5.9.3",
     "vitest": "5.1.1"
   }

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { ErrorDeConexion, type ErrorDeApi, errorDeRespuesta } from '../src/errors.js';
 import type { Operacion } from '../src/request.js';
+import { OPERACIONES } from '../src/generated/operations.js';
 import { decidirReintento } from '../src/retry.js';
 
 function operacion(parcial: Partial<Operacion> = {}): Operacion {
@@ -20,10 +21,12 @@ function operacion(parcial: Partial<Operacion> = {}): Operacion {
   };
 }
 
-/** `caf_v1_descargar` con su `x-idempotente` y su `x-reintentable` tal como vienen en el contrato. */
+/** `caf_v1_descargar` con su `x-idempotente`, su `ambiente` y su `x-reintentable` tal como vienen en el contrato. */
 const CAF_DESCARGAR = operacion({
   id: 'caf_v1_descargar',
   idempotente: false,
+  ambiente: 'query',
+  ambienteObligatorio: true,
   reintentable: {
     automatico: ['409', '429'],
     manual: [
@@ -52,6 +55,17 @@ const CONSULTAR = operacion({
 });
 
 const OPCIONES = { maxReintentos: 2, esperaMaximaMs: 30000, azar: () => 0.5 };
+
+test('CAF_DESCARGAR coincide con la operación generada', () => {
+  const generada = OPERACIONES.caf_v1_descargar!;
+  expect(CAF_DESCARGAR).toMatchObject({
+    idempotente: generada.idempotente,
+    ambienteObligatorio: generada.ambienteObligatorio,
+    reintentable: { automatico: generada.reintentable.automatico },
+  });
+  expect(generada.reintentable.manual).toEqual(expect.arrayContaining([...CAF_DESCARGAR.reintentable.manual]));
+  expect(generada.reintentable.nunca).toEqual(expect.arrayContaining([...CAF_DESCARGAR.reintentable.nunca]));
+});
 
 function error(status: number, cuerpo: string, cabeceras: Record<string, string> = {}): ErrorDeApi {
   return errorDeRespuesta('prueba', status, new Headers(cabeceras), cuerpo);

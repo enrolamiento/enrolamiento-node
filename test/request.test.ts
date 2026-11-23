@@ -2,6 +2,7 @@ import { inspect } from 'node:util';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import Enrolamiento from '../src/client.js';
 import { ErrorDeApi, ErrorDeConexion, ErrorDeConfiguracion, ErrorDeNegocio, errorDeRespuesta } from '../src/errors.js';
+import { OPERACIONES } from '../src/generated/operations.js';
 import { Nucleo, PromesaDeApi, type OpcionesDeCliente, type Operacion } from '../src/request.js';
 import { VERSION } from '../src/version.js';
 
@@ -116,6 +117,17 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.useRealTimers();
+});
+
+test('CAF_DESCARGAR coincide con la operación generada', () => {
+  const generada = OPERACIONES.caf_v1_descargar!;
+  expect(CAF_DESCARGAR).toMatchObject({
+    idempotente: generada.idempotente,
+    ambienteObligatorio: generada.ambienteObligatorio,
+    reintentable: { automatico: generada.reintentable.automatico },
+  });
+  expect(generada.reintentable.manual).toEqual(expect.arrayContaining([...CAF_DESCARGAR.reintentable.manual]));
+  expect(generada.reintentable.nunca).toEqual(expect.arrayContaining([...CAF_DESCARGAR.reintentable.nunca]));
 });
 
 describe('arma el pedido', () => {
