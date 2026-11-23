@@ -1,0 +1,27 @@
+name: Contract drift
+
+on:
+  schedule:
+    - cron: '0 12 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    name: Contrato publicado
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run contract:pull
+      - run: |
+          git diff --exit-code contract/openapi.json || {
+            echo "::error::El contrato publicado cambió: corra \`npm run contract:pull && npm run generate\`, revise el diff y publique una versión"
+            exit 1
+          }
