@@ -1,0 +1,34 @@
+{
+  "name": "enrolamiento",
+  "version": "0.1.0",
+  "description": "SDK oficial de la API de Enrolamiento para Node",
+  "type": "module",
+  "license": "MIT",
+  "repository": "github:enrolamiento/enrolamiento-node",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "contract:pull": "node scripts/pull-contract.mjs",
+    "build": "tsc -p .",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.test.json"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "5.9.3",
+    "vitest": "5.1.1"
+  }
+}
