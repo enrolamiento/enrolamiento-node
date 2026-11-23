@@ -16,3 +16,15 @@ export { VERSION_DEL_CONTRATO } from './generated/operations.js';
 export type { DatosYRespuesta, OpcionesDeCliente, OpcionesDePedido, PromesaDeApi } from './request.js';
 export type { ParamsDe, RespuestaDe } from './types.js';
 export { VERSION } from './version.js';
+export { ErrorDeFirma } from './errors.js';
+export { webhooks } from './webhooks.js';
+export type {
+  CabecerasDeWebhook,
+  EventoCertificacionFinalizada,
+  EventoDesconocido,
+  EventoDeWebhook,
+  EventoPrueba,
+  EventoRespaldoFinalizado,
+  OpcionesDeVerificacion,
+  Respaldo,
+} from './webhooks.js';
