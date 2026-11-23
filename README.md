@@ -17,18 +17,26 @@ Requiere Node 22.12 o posterior.
 
 ```ts
 import { readFileSync } from 'node:fs';
-import Enrolamiento, { Ambiente, ErrorDeNegocio } from 'enrolamiento';
+import Enrolamiento, { Ambiente, ErrorDeApi, ErrorDeNegocio } from 'enrolamiento';
 
-// Lee ENROLAMIENTO_USUARIO y ENROLAMIENTO_APIKEY del entorno.
+// Lee ENROLAMIENTO_USUARIO y ENROLAMIENTO_APIKEY del entorno. Sin `ambiente`, ninguna operación que lo recibe sale.
 const enrolamiento = new Enrolamiento({ ambiente: Ambiente.Homologacion });
 
-const certificacion = await enrolamiento.certificaciones.v1.consultar({ rut: '11111111-1' });
+try {
+  const certificacion = await enrolamiento.certificaciones.v1.consultar({ rut: '11111111-1' });
+  console.log(certificacion.Estado);
+} catch (error) {
+  // Una empresa que todavía no se certifica con usted no tiene certificación: la API responde 404.
+  if (error instanceof ErrorDeApi && error.status === 404) console.log('Esa empresa no tiene certificación.');
+  else throw error;
+}
 
 const certificado = { Data: readFileSync('certificado.pfx', 'base64'), Contrasenna: process.env.CLAVE_DEL_PFX! };
 try {
   const caf = await enrolamiento.caf.descargar({ rut: '11111111-1', tipoDocumento: 33, cantidad: 100, ...certificado });
 } catch (error) {
   if (error instanceof ErrorDeNegocio) console.error(error.codigo, error.reintentable);
+  else throw error;
 }
 ```
 
@@ -45,8 +53,13 @@ El cliente tiene un método por operación de la API, agrupados como en la
 | `portabilidad` | `sesiones` |
 | `respaldos` | `consultar`, `descargar`, `listar` |
 
+`caf.olvidarMemoria` está reservado a la credencial de operaciones de Enrolamiento: con cualquier otra, la API
+responde 403. Para que la API le vuelva a preguntar al SII, use `consultarSii: 'forzar'` (vea `conRespuesta()`).
+
 Cada método recibe un solo objeto de parámetros con los nombres de campo de la API, sin traducir (`rut`,
 `tipoDocumento`, `Data`, `Contrasenna`): los de la ruta, los de la query y las propiedades del cuerpo JSON, juntos.
+Una clave que la operación no recibe (`Ambiente`, `ambiete`, `data`) lanza `ErrorDeConfiguracion` sin enviar el
+pedido; el mensaje nombra la clave y sugiere la parecida. Una clave con valor `undefined` se ignora.
 El JSDoc de cada método nombra su operación en el contrato (`caf_v1_descargar`), y `ParamsDe<'caf_v1_descargar'>`
 y `RespuestaDe<'caf_v1_descargar'>` dan sus tipos. El método devuelve el JSON de la respuesta 200, ya parseado.
 
@@ -80,9 +93,12 @@ lo reconoce. Por eso el SDK:
 - acepta solo `Ambiente.Homologacion` (0) y `Ambiente.Produccion` (1), y lanza `ErrorDeConfiguracion` ante
   cualquier otro valor, sin enviar el pedido;
 - toma el `ambiente` de la llamada o, si falta, el de las opciones del cliente;
-- no envía `caf.descargar`, `caf.anular` ni `caf.anulacionMasivaAnular` sin `ambiente`: timbran o anulan folios.
+- no envía sin `ambiente` ninguna de las 14 operaciones que lo reciben (las de `caf` salvo `olvidarMemoria`,
+  `certificaciones.v1.actualizarCasillasIntercambio` y `empresas.permisos`): lanza `ErrorDeConfiguracion`;
+- rechaza una errata como `Ambiente` o `ambiete`, que de otro modo dejaría el pedido sin `ambiente`.
 
-Defina `ambiente` en el cliente, siempre explícito, y cámbielo a `Ambiente.Produccion` solo donde corresponde:
+Defina `ambiente` en el cliente, siempre explícito: así ninguna llamada queda sin él. Cámbielo a
+`Ambiente.Produccion` solo donde corresponde:
 
 ```ts
 import Enrolamiento, { Ambiente } from 'enrolamiento';
@@ -111,9 +127,15 @@ Las opciones del cliente:
 | `fetch` | el `fetch` global |
 | `cabeceras` | ninguna |
 
+`urlBase` acepta solo `https:`, o `http:` hacia `localhost`, `127.0.0.1` o `[::1]`, sin credenciales, query ni
+fragmento: la cabecera `Authorization` viajaría en claro. Un `fetch` propio recibe esa cabecera, con las
+credenciales; lo que lance llega como `error.cause` de un `ErrorDeConexion`.
+
 ## Errores
 
-Todo lo que lanza el SDK hereda de `EnrolamientoError`. Cuando la API respondió con un status que no es 2xx, el
+Todo lo que lanza el SDK hereda de `EnrolamientoError`, también ante un argumento con otra forma: lo que falla
+antes de llamar a la API es `ErrorDeConfiguracion`, y ningún mensaje copia un valor recibido (de un texto, dice
+solo su largo). Cuando la API respondió con un status que no es 2xx, el
 error hereda además de `ErrorDeApi`, con `status`, `codigo`, `subcodigo`, `mensaje`, `reintentable` (la cabecera
 `X-Reintentable`), `cabeceras`, `cuerpo` y `operacion`.
 
@@ -125,7 +147,7 @@ error hereda además de `ErrorDeApi`, con `status`, `codigo`, `subcodigo`, `mens
 | `ErrorDeTiempoAgotado` | HTTP 504 sin `X-Codigo-Error`: la capa de entrada cortó a los 60 segundos. El pedido puede seguir en curso. |
 | `ErrorDeFramework` | Cuerpo JSON con `Message`: ruta, verbo o parámetro inválido, o una excepción no controlada. |
 | `ErrorDeConexion` | No llegó respuesta: la conexión falló, venció `timeoutMs` (`tiempoAgotado: true`) o se canceló con `signal` (`tiempoAgotado: false`). |
-| `ErrorDeConfiguracion` | El SDK no pudo armar el pedido (faltan credenciales o un parámetro, `ambiente` inválido, una opción fuera de rango) y no llamó a la API. También si falta el secreto de los webhooks. |
+| `ErrorDeConfiguracion` | El SDK no pudo armar el pedido (faltan credenciales o un parámetro, falta `ambiente` o no es 0 ni 1, una clave que la operación no recibe, una opción fuera de rango) y no llamó a la API. También si falta el secreto de los webhooks. |
 | `ErrorDeFirma` | Un webhook no pasó la verificación. |
 
 **Decida por `codigo`, nunca por el status HTTP ni por el texto del mensaje.** Los rechazos de negocio llegan casi
@@ -165,8 +187,8 @@ El SDK reintenta solo, con espera exponencial, lo que el contrato de la API dice
 La decisión es por operación: cada una declara en el contrato si es idempotente y qué códigos se reintentan
 solos, cuáles con cuidado y cuáles nunca.
 
-- **Sin respuesta** (`ErrorDeConexion` por una falla de red o por `timeoutMs`) **o HTTP 504**: se reintenta solo si
-  la operación es idempotente, porque el primer intento pudo ejecutarse.
+- **Sin respuesta** (`ErrorDeConexion` por una falla de red o por `timeoutMs`) **o HTTP 504 sin
+  `X-Codigo-Error`**: se reintenta solo si la operación es idempotente, porque el primer intento pudo ejecutarse.
 - **Un error con código**: se reintenta si la operación lo lista entre los automáticos, respetando `Retry-After`.
   Un código que la operación no lista se reintenta solo si `X-Reintentable` es `si` y la operación es idempotente.
 - **El límite de pedidos** (HTTP 409 sin código): no se reintenta por omisión. La API pide esperar 60 segundos y
@@ -221,16 +243,21 @@ const estadisticas = await enrolamiento.certificaciones.v1.stats(
 
 ## Webhooks
 
-`webhooks.verificar(cuerpoCrudo, cabeceras, secreto?)` comprueba la firma de una entrega y devuelve su evento.
+`webhooks.verificar(cuerpoCrudo, cabeceras, opciones?)` comprueba la firma de una entrega y devuelve su evento.
 Lanza `ErrorDeFirma` si la entrega no pasa (responda con un 4xx y no la procese) y `ErrorDeConfiguracion` si falta
-el secreto.
+el secreto o una opción no sirve.
+
+| Opción | Por omisión |
+|---|---|
+| `secreto` | `ENROLAMIENTO_WEBHOOK_SECRETO`: el secreto de la suscripción en el portal |
+| `toleranciaMs` | `300000` (5 minutos): diferencia máxima entre `X-Enrolamiento-Fecha` y el reloj |
+| `ahora` | `Date.now()`: el reloj contra el que se compara la fecha, en milisegundos desde 1970 |
 
 - **Use el cuerpo crudo**, tal como llegó: `string`, `Buffer`, `Uint8Array` o `ArrayBuffer`. La firma cubre sus
   bytes exactos; un objeto ya parseado no sirve.
-- El secreto es el de la suscripción en el portal. Por omisión, `ENROLAMIENTO_WEBHOOK_SECRETO`.
-- La fecha de la entrega (`X-Enrolamiento-Fecha`) puede diferir a lo más 5 minutos del reloj de su servidor.
+- La fecha de la entrega (`X-Enrolamiento-Fecha`) puede diferir a lo más `toleranciaMs` del reloj de su servidor.
 - Responda con un 2xx en menos de 10 segundos; si el trabajo es lento, conteste primero y procese después.
-- La misma entrega puede llegar más de una vez: deduplique por `X-Enrolamiento-Entrega`.
+- La misma entrega puede llegar más de una vez: deduplique por `evento.id`, el identificador de la entrega.
 - La API puede agregar eventos. Deje una rama `default` que responda 2xx y no haga nada.
 
 Un receptor mínimo con `node:http`:
@@ -255,9 +282,8 @@ createServer((req, res) => {
     }
     res.writeHead(204).end();
 
-    const entrega = String(req.headers['x-enrolamiento-entrega']);
-    if (procesadas.has(entrega)) return;
-    procesadas.add(entrega);
+    if (procesadas.has(evento.id)) return;
+    procesadas.add(evento.id);
 
     switch (evento.evento) {
       case 'certificacion.finalizada':
@@ -276,7 +302,8 @@ createServer((req, res) => {
 }).listen(3000);
 ```
 
-`webhooks.firmar(cuerpo, secreto)` firma un cuerpo como lo hace la API, para probar su receptor.
+`webhooks.firmar(cuerpo, secreto, fecha?)` firma un cuerpo como lo hace la API, para probar su receptor: devuelve
+`X-Enrolamiento-Fecha` y `X-Enrolamiento-Firma`. La fecha es, por omisión, la hora actual.
 
 ## Crear una sesión del widget
 
@@ -325,7 +352,8 @@ console.log(datos.Estado, respuesta.status, respuesta.headers.get('RateLimit-Rem
 
 Un error no tiene `Response`: sus cabeceras están en `error.cabeceras`. Así se lee `X-Respuesta-De-Memoria`, que
 `caf.descargar` y `caf.anulacionMasivaAnular` traen cuando la API repite de memoria un rechazo del SII (solo con la
-memoria de rechazos activa para su cuenta); para que le vuelva a preguntar al SII, pase `consultarSii: 'forzar'`.
+memoria de rechazos activa para su cuenta). Su valor es la fecha, en ISO-8601 y UTC, de la respuesta original del
+SII. Para que la API le vuelva a preguntar al SII, pase `consultarSii: 'forzar'`.
 
 ```ts
 import { readFileSync } from 'node:fs';
@@ -339,7 +367,7 @@ try {
 } catch (error) {
   const deMemoria = error instanceof ErrorDeApi ? error.cabeceras.get('X-Respuesta-De-Memoria') : null;
   if (deMemoria !== null) {
-    // El SII contestó esto en `deMemoria`. Si la empresa ya lo corrigió:
+    // El SII contestó esto en la fecha `deMemoria` (ISO-8601, UTC). Si la empresa ya lo corrigió:
     await enrolamiento.caf.descargar({
       rut: '11111111-1',
       tipoDocumento: 33,
@@ -355,11 +383,11 @@ try {
 
 - Node 22.12 o posterior.
 - El paquete es solo ESM. Desde CommonJS, `require()` también funciona, porque Node 22.12 o posterior puede cargar
-  ESM con `require()`; la clase viene en `default`. En Node 22.12 ese `require()` emite un `ExperimentalWarning`;
-  desde 22.13, no.
+  ESM con `require()`; la clase viene con nombre, `Enrolamiento`, y también en `default`. En Node 22.12 ese
+  `require()` emite un `ExperimentalWarning`; desde 22.13, no.
 
 ```js
-const { default: Enrolamiento, Ambiente } = require('enrolamiento');
+const { Enrolamiento, Ambiente } = require('enrolamiento');
 
 const enrolamiento = new Enrolamiento({ ambiente: Ambiente.Homologacion });
 ```
