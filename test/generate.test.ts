@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test } from 'vitest';
 import { generar } from '../scripts/generate.mjs';
-import { OVERRIDES } from '../scripts/overrides.mjs';
+import { NOMBRES_DE_ENUM, OVERRIDES } from '../scripts/overrides.mjs';
 import * as enums from '../src/generated/enums.js';
 import { Ambiente } from '../src/generated/enums.js';
 import { OPERACIONES, VERSION_DEL_CONTRATO } from '../src/generated/operations.js';
@@ -49,6 +49,7 @@ test('caf_v1_descargar', () =>
     ruta: '/v1/caf/{rut}/descargar/{tipoDocumento}/{cantidad}',
     enRuta: ['rut', 'tipoDocumento', 'cantidad'],
     enQuery: ['ambiente', 'descargarCafAntiguos', 'ultimoFolio'],
+    enCabecera: { consultarSii: 'X-Consultar-Sii' },
     cuerpo: 'plano',
     idempotente: false,
     ambiente: 'query',
@@ -87,6 +88,16 @@ test('ambiente: query o ruta en toda operación que tiene un parámetro ambiente
 test('ambienteObligatorio sale de x-sdk-ambiente-obligatorio', () => {
   for (const { id, op } of operacionesDelContrato()) {
     if (OPERACIONES[id]) expect(OPERACIONES[id].ambienteObligatorio, id).toBe(op['x-sdk-ambiente-obligatorio'] === true);
+  }
+});
+
+test('enCabecera: los parámetros de cabecera, sin X- y en camelCase', () => {
+  expect(OPERACIONES.caf_v1_anulacion_masiva_anular!.enCabecera).toEqual({ consultarSii: 'X-Consultar-Sii' });
+  expect(OPERACIONES.caf_v1_descargar!.enCabecera).toEqual({ consultarSii: 'X-Consultar-Sii' });
+  for (const { id, parametros } of operacionesDelContrato()) {
+    if (!OPERACIONES[id]) continue;
+    const cabeceras = parametros.filter((p) => p.in === 'header').map((p) => p.name);
+    expect(Object.values(OPERACIONES[id].enCabecera).sort(), id).toEqual(cabeceras.sort());
   }
 });
 
@@ -132,12 +143,20 @@ test('Ambiente.Homologacion es 0 y Ambiente.Produccion es 1', () => {
 });
 
 test('un objeto por esquema con x-enum-varnames, con los valores del contrato', () => {
-  const conNombres = Object.entries<any>(CONTRATO.components.schemas).filter(([, s]) => s['x-enum-varnames']);
+  const conNombres = Object.entries<any>(CONTRATO.components.schemas)
+    .filter(([, s]) => s['x-enum-varnames'])
+    .map(([nombre, esquema]) => [NOMBRES_DE_ENUM[nombre] ?? nombre, esquema] as const);
   expect(Object.keys(enums).sort()).toEqual(conNombres.map(([nombre]) => nombre).sort());
   for (const [nombre, esquema] of conNombres) {
     const esperado = Object.fromEntries(esquema['x-enum-varnames'].map((n: string, i: number) => [n, esquema.enum[i]]));
     expect((enums as Record<string, unknown>)[nombre], nombre).toEqual(esperado);
   }
+});
+
+test('el esquema Set se exporta como SetDePruebas', () => {
+  expect(enums).not.toHaveProperty('Set');
+  expect(enums.SetDePruebas.SetBasico).toBe(33);
+  expect(enums.SetDePruebas.SetExportacion).toBe(110);
 });
 
 test('el código generado importa Operacion con import type, lleva el encabezado y no usa enum', () => {
@@ -146,7 +165,7 @@ test('el código generado importa Operacion con import type, lleva el encabezado
   for (const archivo of readdirSync('src/generated')) {
     const texto = readFileSync(join('src/generated', archivo), 'utf8');
     expect(texto.startsWith('// Generado por scripts/generate.mjs'), archivo).toBe(true);
-    if (archivo.endsWith('.ts') && !archivo.endsWith('.d.ts')) expect(texto, archivo).not.toMatch(/\benum\s+[A-Za-z_]/);
+    expect(texto, archivo).not.toMatch(/\benum\s+[A-Za-z_]/);
   }
 });
 
@@ -155,7 +174,7 @@ test('regenerar no cambia nada', () => {
   try {
     execFileSync(process.execPath, ['scripts/generate.mjs', '--out', directorio], { stdio: 'pipe' });
     const generados = readdirSync(directorio).sort();
-    expect(generados).toEqual(['enums.ts', 'operations.ts', 'schema.d.ts']);
+    expect(generados).toEqual(['enums.ts', 'operations.ts', 'schema.ts']);
     expect(readdirSync('src/generated').sort()).toEqual(generados);
     for (const archivo of generados) {
       const nuevo = readFileSync(join(directorio, archivo));
@@ -234,4 +253,37 @@ test('falla si un override nombra una operación que no existe', () => {
 
 test('los overrides del repo nombran operaciones generadas', () => {
   for (const id of Object.keys(OVERRIDES)) expect(OPERACIONES, id).toHaveProperty(id);
+});
+
+test('falla si el nombre de una cabecera en el SDK choca con un parámetro o con el cuerpo', () => {
+  const cabecera = (name: string) => ({ in: 'header', name, schema: { type: 'string' } });
+  const rutaYQuery = contratoArmado({});
+  const parametros = rutaYQuery.paths['/v1/x/{rut}'].post.parameters;
+
+  const conRut = contratoArmado({ parameters: [...parametros, cabecera('X-Rut')] });
+  expect(() => generar(conRut, {})).toThrow(/x_v1_op.*X-Rut.*`rut`/);
+
+  const conAmbiente = contratoArmado({ parameters: [...parametros, cabecera('Ambiente')] });
+  expect(() => generar(conAmbiente, {})).toThrow(/x_v1_op.*Ambiente.*`ambiente`/);
+
+  const conCuerpoQueChoca = contratoArmado({
+    parameters: [...parametros, cabecera('X-Data')],
+    ...conCuerpo({ type: 'object', properties: { data: { type: 'string' } } }),
+  });
+  expect(() => generar(conCuerpoQueChoca, {})).toThrow(/x_v1_op.*X-Data.*`data`/);
+  // Aunque un override acepte el cuerpo, el choque con la cabecera sigue fallando.
+  expect(() => generar(conCuerpoQueChoca, { x_v1_op: { motivo: 'prueba' } })).toThrow(/x_v1_op.*X-Data/);
+
+  const sinChoque = contratoArmado({ parameters: [...parametros, cabecera('X-Consultar-Sii')] });
+  expect(generar(sinChoque, {})['operations.ts']).toContain("consultarSii: 'X-Consultar-Sii',");
+});
+
+test('falla si un enum se exportaría con el nombre de un global de JavaScript', () => {
+  const conSet = contratoArmado({}, { Set: { type: 'integer', enum: [33], 'x-enum-varnames': ['SetBasico'] } });
+  expect(() => generar(conSet, {})).toThrow(/Set.*global/);
+  const archivos = generar(conSet, {}, { Set: 'SetDePruebas' });
+  expect(archivos['enums.ts']).toContain('export const SetDePruebas = {');
+  expect(archivos['enums.ts']).not.toMatch(/export (const|type) Set\b/);
+  expect(() => generar(conSet, {}, { Set: 'Map' })).toThrow(/Map.*global/);
+  expect(() => generar(conSet, {}, { Set: 'SetDePruebas', Otro: 'Otro' })).toThrow(/Otro/);
 });

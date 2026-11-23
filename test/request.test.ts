@@ -17,6 +17,7 @@ function operacion(parcial: Partial<Operacion> = {}): Operacion {
     ruta: '/v1/prueba',
     enRuta: [],
     enQuery: [],
+    enCabecera: {},
     cuerpo: 'ninguno',
     idempotente: true,
     ambiente: 'no',
@@ -32,6 +33,8 @@ const CAF_DESCARGAR = operacion({
   metodo: 'POST',
   ruta: '/v1/caf/{rut}/descargar/{tipoDocumento}/{cantidad}',
   enRuta: ['rut', 'tipoDocumento', 'cantidad'],
+  enQuery: ['ambiente', 'descargarCafAntiguos', 'ultimoFolio'],
+  enCabecera: { consultarSii: 'X-Consultar-Sii' },
   cuerpo: 'plano',
   idempotente: false,
   ambiente: 'query',
@@ -122,6 +125,8 @@ afterEach(() => {
 test('CAF_DESCARGAR coincide con la operación generada', () => {
   const generada = OPERACIONES.caf_v1_descargar!;
   expect(CAF_DESCARGAR).toMatchObject({
+    enQuery: generada.enQuery,
+    enCabecera: generada.enCabecera,
     idempotente: generada.idempotente,
     ambienteObligatorio: generada.ambienteObligatorio,
     reintentable: { automatico: generada.reintentable.automatico },
@@ -259,6 +264,43 @@ describe('arma el pedido', () => {
     const op = operacion({ ruta: '/v1/respaldos/{rut}', enRuta: ['rut'], queryFija: { formato: 'json' } });
     await cliente(f).pedir(op, { rut: '1-9' });
     expect(f.pedidos[0]!.url).toBe('https://api.enrolamiento.cl/v1/respaldos/1-9?formato=json');
+  });
+});
+
+describe('parámetros de cabecera', () => {
+  const DATOS = { rut: '1-9', tipoDocumento: 33, cantidad: 10, ambiente: 0, Contrasenna: 'x', Data: 'y' };
+
+  test('van en su cabecera y no en la URL ni en el cuerpo', async () => {
+    const f = fetchFalso();
+    await cliente(f).pedir(CAF_DESCARGAR, { ...DATOS, consultarSii: 'forzar' });
+    const pedido = f.pedidos[0]!;
+    expect(pedido.cabeceras.get('X-Consultar-Sii')).toBe('forzar');
+    expect(pedido.url).toBe('https://api.enrolamiento.cl/v1/caf/1-9/descargar/33/10?ambiente=0');
+    expect(JSON.parse(String(pedido.cuerpo))).toEqual({ Contrasenna: 'x', Data: 'y' });
+  });
+
+  test('undefined no envía la cabecera', async () => {
+    const f = fetchFalso();
+    await cliente(f).pedir(CAF_DESCARGAR, { ...DATOS, consultarSii: undefined });
+    expect(f.pedidos[0]!.cabeceras.has('X-Consultar-Sii')).toBe(false);
+    expect(JSON.parse(String(f.pedidos[0]!.cuerpo))).toEqual({ Contrasenna: 'x', Data: 'y' });
+  });
+
+  test('un valor que no es texto o que tiene CR o LF lanza ErrorDeConfiguracion sin llamar a fetch', async () => {
+    const f = fetchFalso();
+    for (const consultarSii of [1, true, null, { a: 1 }, 'forzar\r\nX-Otra: 1', 'a\nb', 'a\rb']) {
+      const promesa = cliente(f).pedir(CAF_DESCARGAR, { ...DATOS, consultarSii });
+      await expect(promesa).rejects.toBeInstanceOf(ErrorDeConfiguracion);
+      await expect(promesa).rejects.toThrow(/consultarSii/);
+    }
+    expect(f.fn).not.toHaveBeenCalled();
+  });
+
+  test('no puede pisar Authorization', async () => {
+    const f = fetchFalso();
+    const op = operacion({ enCabecera: { autorizacion: 'Authorization' } });
+    await cliente(f).pedir(op, { autorizacion: 'Basic otro' });
+    expect(f.pedidos[0]!.cabeceras.get('Authorization')).toBe(BASIC);
   });
 });
 

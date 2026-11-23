@@ -30,3 +30,12 @@ export const OVERRIDES = {
       'el cuerpo (200, con vence), que es lo que el SDK devuelve.',
   },
 };
+
+/**
+ * Nombre de exportación de un enum, por nombre de esquema del contrato. Hace falta cuando el esquema se llama
+ * como un global de JavaScript: el módulo que lo importara por nombre lo taparía.
+ * @type {Readonly<Record<string, string>>}
+ */
+export const NOMBRES_DE_ENUM = {
+  Set: 'SetDePruebas',
+};

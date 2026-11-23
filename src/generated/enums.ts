@@ -78,8 +78,12 @@ export const ReiniciarProceso = {
 } as const;
 export type ReiniciarProceso = (typeof ReiniciarProceso)[keyof typeof ReiniciarProceso];
 
-/** Sets posibles a certificar. */
-export const Set = {
+/**
+ * Sets posibles a certificar.
+ *
+ * Esquema `Set` del contrato.
+ */
+export const SetDePruebas = {
   /** SET Básico (33, 56, 61) */
   SetBasico: 33,
   /** SET Factura Exento (34, 56, 61) */
@@ -97,4 +101,4 @@ export const Set = {
   /** SET Exportación (110, 111, 112) */
   SetExportacion: 110,
 } as const;
-export type Set = (typeof Set)[keyof typeof Set];
+export type SetDePruebas = (typeof SetDePruebas)[keyof typeof SetDePruebas];

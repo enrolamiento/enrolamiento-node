@@ -1,7 +1,7 @@
 // Genera src/generated desde contract/openapi.json:
 // - operations.ts: lo que el SDK necesita saber de cada operación (tipo `Operacion`).
 // - enums.ts: un objeto `as const` y su tipo por cada esquema con `x-enum-varnames`.
-// - schema.d.ts: los tipos de esquemas y operaciones, con openapi-typescript.
+// - schema.ts: los tipos de esquemas y operaciones, con openapi-typescript (solo tipos).
 //
 // Uso: node scripts/generate.mjs [--out <directorio>]
 // Sin --out escribe en src/generated. La salida es determinista: el mismo
@@ -10,7 +10,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { OVERRIDES } from './overrides.mjs';
+import { NOMBRES_DE_ENUM, OVERRIDES } from './overrides.mjs';
 
 /** @typedef {import('./overrides.mjs').Override} Override */
 
@@ -21,15 +21,30 @@ const ENCABEZADO =
 
 const METODOS = ['get', 'post', 'put', 'delete'];
 const IDENTIFICADOR = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+/** Globales de JavaScript que un enum exportado taparía en el módulo que lo importe por nombre. */
+const GLOBALES = new Set([
+  'Set',
+  'Map',
+  'Object',
+  'Array',
+  'Promise',
+  'Error',
+  'Date',
+  'Symbol',
+  'Number',
+  'String',
+  'Boolean',
+]);
 
 /**
  * Genera `operations.ts` y `enums.ts` desde el contrato. Lanza un `Error` que lista todo lo que el contrato
  * tiene y el generador no sabe traducir, con la operación de cada problema.
  * @param {any} contrato el contrato OpenAPI ya parseado
  * @param {Readonly<Record<string, Override>>} overrides
+ * @param {Readonly<Record<string, string>>} [nombresDeEnum] nombre de exportación de un enum, por nombre de esquema
  * @returns {Record<string, string>} contenido de cada archivo, por nombre
  */
-export function generar(contrato, overrides) {
+export function generar(contrato, overrides, nombresDeEnum = {}) {
   /** @type {string[]} */
   const errores = [];
   const operaciones = leerOperaciones(contrato, overrides, errores);
@@ -37,7 +52,7 @@ export function generar(contrato, overrides) {
   for (const id of Object.keys(overrides).sort()) {
     if (!ids.has(id)) errores.push(`${id}: el override nombra una operación que no existe en el contrato (o es un alias)`);
   }
-  const enums = leerEnums(contrato, errores);
+  const enums = leerEnums(contrato, nombresDeEnum, errores);
   if (errores.length > 0) {
     throw new Error(`El contrato no se puede generar:\n- ${errores.join('\n- ')}`);
   }
@@ -48,7 +63,7 @@ export function generar(contrato, overrides) {
 }
 
 /**
- * Genera `schema.d.ts` con openapi-typescript.
+ * Genera `schema.ts` con openapi-typescript: solo tipos, para que `tsc` emita su declaración en `dist`.
  * @param {any} contrato
  * @returns {Promise<string>}
  */
@@ -96,6 +111,7 @@ function resolver(contrato, valor, contexto, errores) {
  * @property {string} ruta
  * @property {string[]} enRuta
  * @property {string[]} enQuery
+ * @property {Record<string, string>} enCabecera
  * @property {'ninguno' | 'plano'} cuerpo
  * @property {boolean} idempotente
  * @property {'no' | 'query' | 'ruta'} ambiente
@@ -183,11 +199,17 @@ function leerOperacion(contrato, id, metodo, ruta, item, op, override, errores) 
 
   /** @type {OperacionLeida['cuerpo']} */
   let cuerpo = 'ninguno';
+  /** @type {string[]} */
+  let delCuerpo = [];
   if (op.requestBody !== undefined) {
     cuerpo = 'plano';
-    // Una entrada en los overrides acepta el cuerpo tal como venga.
-    if (override === undefined) revisarCuerpo(contrato, id, op.requestBody, [...deRuta, ...deQuery], errores);
+    // Una entrada en los overrides acepta el cuerpo tal como venga: sus problemas no se anotan.
+    const erroresDelCuerpo = override === undefined ? errores : [];
+    delCuerpo = revisarCuerpo(contrato, id, op.requestBody, [...deRuta, ...deQuery], erroresDelCuerpo);
   }
+
+  const cabeceras = [...parametros.values()].filter((p) => p.in === 'header').map((p) => String(p.name));
+  const enCabecera = leerCabeceras(id, cabeceras, [...deRuta, ...deQuery, ...delCuerpo], errores);
 
   const reintentable = leerReintentable(id, op['x-reintentable'], errores);
 
@@ -198,6 +220,7 @@ function leerOperacion(contrato, id, metodo, ruta, item, op, override, errores) 
     ruta,
     enRuta,
     enQuery,
+    enCabecera,
     cuerpo,
     idempotente: op['x-idempotente'] === true,
     ambiente,
@@ -215,25 +238,61 @@ function leerOperacion(contrato, id, metodo, ruta, item, op, override, errores) 
  * @param {any} requestBody
  * @param {string[]} parametros
  * @param {string[]} errores
+ * @returns {string[]} los nombres de las propiedades del cuerpo, si es un objeto
  */
 function revisarCuerpo(contrato, id, requestBody, parametros, errores) {
   const cuerpo = resolver(contrato, requestBody, id, errores);
   const crudo = cuerpo?.content?.['application/json']?.schema;
   if (crudo === undefined) {
     if (cuerpo) errores.push(`${id}: el cuerpo no es application/json`);
-    return;
+    return [];
   }
   const esquema = resolver(contrato, crudo, id, errores);
-  if (!esquema) return;
+  if (!esquema) return [];
   if (esquema.type !== 'object') {
     errores.push(`${id}: el cuerpo no es un objeto (type: ${JSON.stringify(esquema.type)})`);
-    return;
+    return [];
   }
-  for (const nombre of Object.keys(esquema.properties ?? {}).sort()) {
+  const propiedades = Object.keys(esquema.properties ?? {}).sort();
+  for (const nombre of propiedades) {
     if (parametros.includes(nombre)) {
       errores.push(`${id}: la propiedad del cuerpo \`${nombre}\` se llama como un parámetro de ruta o de query`);
     }
   }
+  return propiedades;
+}
+
+/**
+ * Los parámetros de cabecera, por su nombre en el SDK: la cabecera sin `X-` inicial, en camelCase
+ * (`X-Consultar-Sii` → `consultarSii`). Ese nombre no puede chocar con uno de ruta, de query o del cuerpo.
+ * @param {string} id
+ * @param {string[]} cabeceras nombres de las cabeceras en el contrato
+ * @param {string[]} otros nombres de ruta, de query y del cuerpo
+ * @param {string[]} errores
+ * @returns {Record<string, string>} cabecera HTTP, por nombre en el SDK, con las claves ordenadas
+ */
+function leerCabeceras(id, cabeceras, otros, errores) {
+  /** @type {[string, string][]} */
+  const pares = [];
+  for (const cabecera of cabeceras) {
+    const nombre = cabecera
+      .replace(/^x-/i, '')
+      .split(/[-_]+/)
+      .filter((parte) => parte !== '')
+      .map((parte, i) => {
+        const minusculas = parte.toLowerCase();
+        return i === 0 ? minusculas : minusculas.charAt(0).toUpperCase() + minusculas.slice(1);
+      })
+      .join('');
+    if (!IDENTIFICADOR.test(nombre)) {
+      errores.push(`${id}: la cabecera ${cabecera} no da un nombre válido en el SDK (${JSON.stringify(nombre)})`);
+    } else if (otros.includes(nombre) || pares.some(([otro]) => otro === nombre)) {
+      errores.push(`${id}: la cabecera ${cabecera} se llamaría \`${nombre}\`, como otro parámetro o propiedad del cuerpo`);
+    } else {
+      pares.push([nombre, cabecera]);
+    }
+  }
+  return Object.fromEntries(pares.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
 }
 
 /**
@@ -259,46 +318,72 @@ function leerReintentable(id, valor, errores) {
 
 /**
  * @typedef {object} EnumLeido
- * @property {string} nombre
+ * @property {string} nombre el de exportación
+ * @property {string} esquema el del contrato
  * @property {string | undefined} descripcion
  * @property {{ nombre: string, valor: number | string, descripcion: string | undefined }[]} miembros
  */
 
 /**
- * Los esquemas con `x-enum-varnames`, ordenados por nombre.
+ * Los esquemas con `x-enum-varnames`, ordenados por nombre de esquema.
  * @param {any} contrato
+ * @param {Readonly<Record<string, string>>} nombresDeEnum nombre de exportación, por nombre de esquema
  * @param {string[]} errores
  * @returns {EnumLeido[]}
  */
-function leerEnums(contrato, errores) {
+function leerEnums(contrato, nombresDeEnum, errores) {
   /** @type {EnumLeido[]} */
   const enums = [];
   const esquemas = contrato.components?.schemas ?? {};
-  for (const nombre of Object.keys(esquemas).sort()) {
-    const esquema = esquemas[nombre];
+  for (const renombrado of Object.keys(nombresDeEnum).sort()) {
+    if (esquemas[renombrado]?.['x-enum-varnames'] === undefined) {
+      errores.push(`esquema ${renombrado}: NOMBRES_DE_ENUM lo nombra, pero no es un enum del contrato`);
+    }
+  }
+  /** @type {Set<string>} */
+  const exportados = new Set();
+  for (const nombreDeEsquema of Object.keys(esquemas).sort()) {
+    const esquema = esquemas[nombreDeEsquema];
     const nombres = esquema?.['x-enum-varnames'];
     if (nombres === undefined) continue;
     const valores = esquema.enum;
     const descripciones = esquema['x-enum-descriptions'];
+    const nombre = nombresDeEnum[nombreDeEsquema] ?? nombreDeEsquema;
     if (!IDENTIFICADOR.test(nombre)) {
-      errores.push(`esquema ${nombre}: el nombre no sirve como identificador`);
+      errores.push(`esquema ${nombreDeEsquema}: ${nombre} no sirve como identificador`);
       continue;
     }
+    if (GLOBALES.has(nombre)) {
+      errores.push(
+        `esquema ${nombreDeEsquema}: se exportaría como ${nombre}, un global de JavaScript; ` +
+          'darle otro nombre en NOMBRES_DE_ENUM',
+      );
+      continue;
+    }
+    if (exportados.has(nombre)) {
+      errores.push(`esquema ${nombreDeEsquema}: otro enum ya se exporta como ${nombre}`);
+      continue;
+    }
+    exportados.add(nombre);
     if (!Array.isArray(nombres) || !Array.isArray(valores) || nombres.length !== valores.length) {
-      errores.push(`esquema ${nombre}: x-enum-varnames y enum no tienen el mismo largo`);
+      errores.push(`esquema ${nombreDeEsquema}: x-enum-varnames y enum no tienen el mismo largo`);
       continue;
     }
     const malNombrados = nombres.filter((n, i) => typeof n !== 'string' || !IDENTIFICADOR.test(n) || nombres.indexOf(n) !== i);
     if (malNombrados.length > 0) {
-      errores.push(`esquema ${nombre}: x-enum-varnames repetidos o que no sirven como identificador: ${malNombrados.join(', ')}`);
+      errores.push(
+        `esquema ${nombreDeEsquema}: x-enum-varnames repetidos o que no sirven como identificador: ` +
+          malNombrados.join(', '),
+      );
       continue;
     }
     if (!valores.every((v) => typeof v === 'number' || typeof v === 'string')) {
-      errores.push(`esquema ${nombre}: enum tiene valores que no son números ni textos`);
+      errores.push(`esquema ${nombreDeEsquema}: enum tiene valores que no son números ni textos`);
       continue;
     }
     enums.push({
       nombre,
+      esquema: nombreDeEsquema,
       descripcion: typeof esquema.description === 'string' ? esquema.description : undefined,
       miembros: nombres.map((n, i) => ({
         nombre: n,
@@ -333,9 +418,11 @@ function escribirOperaciones(version, operaciones) {
 /** @param {EnumLeido[]} enums */
 function escribirEnums(enums) {
   const lineas = [ENCABEZADO.trimEnd()];
-  for (const { nombre, descripcion, miembros } of enums) {
+  for (const { nombre, esquema, descripcion, miembros } of enums) {
     lineas.push('');
-    if (descripcion) lineas.push(comentario(descripcion, ''));
+    const renombrado = nombre === esquema ? '' : `Esquema \`${esquema}\` del contrato.`;
+    const texto = [descripcion, renombrado].filter(Boolean).join('\n\n');
+    if (texto) lineas.push(comentario(texto, ''));
     lineas.push(`export const ${nombre} = {`);
     for (const miembro of miembros) {
       if (miembro.descripcion) lineas.push(comentario(miembro.descripcion, '  '));
@@ -403,7 +490,7 @@ function leerSalida(args) {
 async function main() {
   const salida = leerSalida(process.argv.slice(2));
   const contrato = JSON.parse(await readFile(CONTRATO, 'utf8'));
-  const archivos = { ...generar(contrato, OVERRIDES), 'schema.d.ts': await generarEsquema(contrato) };
+  const archivos = { ...generar(contrato, OVERRIDES, NOMBRES_DE_ENUM), 'schema.ts': await generarEsquema(contrato) };
   await mkdir(salida, { recursive: true });
   for (const [nombre, texto] of Object.entries(archivos)) await writeFile(join(salida, nombre), texto);
   console.log(`${salida} escrito desde el contrato ${contrato.info?.version}`);

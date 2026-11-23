@@ -12,6 +12,8 @@ export interface Operacion {
   ruta: string;
   enRuta: readonly string[];
   enQuery: readonly string[];
+  /** Parámetros que van como cabecera HTTP: nombre en el SDK → cabecera, p. ej. `{ consultarSii: 'X-Consultar-Sii' }`. */
+  enCabecera: Readonly<Record<string, string>>;
   /** `'plano'`: lo que no es de ruta ni de query va al cuerpo JSON. `'ninguno'`: la operación no lleva cuerpo. */
   cuerpo: 'ninguno' | 'plano';
   /** `true` solo si el contrato marca la operación con `x-idempotente: true`. */
@@ -155,7 +157,7 @@ export class Nucleo {
   #armar(op: Operacion, params: Record<string, unknown>, opciones: OpcionesDePedido): PedidoArmado {
     const autorizacion = this.#resolverAutorizacion();
     const ambiente = op.ambiente === 'no' ? undefined : resolverAmbiente(op, params, this.#opciones.ambiente);
-    const usados = new Set([...op.enRuta, ...op.enQuery]);
+    const usados = new Set([...op.enRuta, ...op.enQuery, ...Object.keys(op.enCabecera)]);
     if (op.ambiente !== 'no') usados.add('ambiente');
 
     let ruta = op.ruta;
@@ -202,6 +204,19 @@ export class Nucleo {
     const cabeceras = new Headers({ Accept: 'application/json', 'User-Agent': `enrolamiento-node/${VERSION}` });
     for (const extra of [this.#opciones.cabeceras, opciones.cabeceras]) {
       for (const [nombre, valor] of Object.entries(extra ?? {})) cabeceras.set(nombre, valor);
+    }
+    for (const [nombre, cabecera] of Object.entries(op.enCabecera)) {
+      const valor = params[nombre];
+      if (valor === undefined) continue;
+      if (typeof valor !== 'string') {
+        throw new ErrorDeConfiguracion(
+          `${op.id}: \`${nombre}\` va en una cabecera y debe ser un texto; se recibió ${describir(valor)}.`,
+        );
+      }
+      if (/[\r\n]/.test(valor)) {
+        throw new ErrorDeConfiguracion(`${op.id}: \`${nombre}\` va en una cabecera y no puede tener saltos de línea.`);
+      }
+      cabeceras.set(cabecera, valor);
     }
     if (cuerpo !== undefined) cabeceras.set('Content-Type', 'application/json');
     cabeceras.set('Authorization', autorizacion);
