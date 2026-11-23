@@ -49,7 +49,9 @@ function esperaSegunLaRegla(op: Operacion, error: ErrorDeApi | ErrorDeConexion, 
   const { codigo } = error;
   const { automatico, manual, nunca } = op.reintentable;
   if (codigo !== null && (nunca.includes(codigo) || manual.includes(codigo))) return null;
-  if ((codigo !== null && automatico.includes(codigo)) || automatico.includes(String(error.status))) {
+  // El '409' de automatico es el límite de tasa, que no trae código: un 409 con código lo decide su código.
+  const porStatus = !(error.status === 409 && codigo !== null) && automatico.includes(String(error.status));
+  if ((codigo !== null && automatico.includes(codigo)) || porStatus) {
     return retryAfter(error) ?? retroceso(intento, azar);
   }
   // Un código que la operación no lista: decide la cabecera X-Reintentable, y solo si repetir es seguro.

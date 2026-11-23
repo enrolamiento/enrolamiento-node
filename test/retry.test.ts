@@ -104,6 +104,25 @@ describe('decidirReintento: una fila de la tabla por test, en orden', () => {
     expect(decidirReintento(noIdempotente, conCodigo('SII_ERROR_CXN'), 1, OPCIONES).reintentar).toBe(true);
   });
 
+  test('un 409 con código no calza por status: lo decide su código (R11)', () => {
+    const conCodigoNoListado = conCodigo('OTRO_CODIGO', { 'X-Reintentable': 'si' }, 409);
+    expect(conCodigoNoListado.name).toBe('ErrorDeNegocio');
+    // (a) No idempotente: un código no listado con X-Reintentable: si no alcanza.
+    expect(decidirReintento(CAF_DESCARGAR, conCodigoNoListado, 1, OPCIONES)).toEqual(NO);
+    // (b) Idempotente: cae a la fila del código no listado y se reintenta.
+    expect(decidirReintento(CONSULTAR, conCodigoNoListado, 1, OPCIONES)).toEqual({ reintentar: true, esperaMs: 500 });
+    // (d) Un 409 con un código listado en automatico se reintenta por su código.
+    expect(decidirReintento(CONSULTAR, conCodigo('SII_ERROR_CXN', {}, 409), 1, OPCIONES)).toEqual({
+      reintentar: true,
+      esperaMs: 500,
+    });
+  });
+
+  test('(c) un 429 con código no listado se reintenta por status, aun sin idempotencia, con su Retry-After', () => {
+    const bloqueo = conCodigo('CAF_REQUEST_IN_PROGRESS', { 'Retry-After': '5' }, 429);
+    expect(decidirReintento(CAF_DESCARGAR, bloqueo, 1, OPCIONES)).toEqual({ reintentar: true, esperaMs: 5000 });
+  });
+
   test('Retry-After ausente, no numérico o negativo cae al retroceso', () => {
     for (const valor of ['', 'abc', '-5', '1.5', 'Wed, 21 Oct 2026 07:28:00 GMT']) {
       expect(decidirReintento(CONSULTAR, conCodigo('SII_ERROR_CXN', { 'Retry-After': valor }), 1, OPCIONES)).toEqual({
