@@ -21,7 +21,6 @@ export { webhooks } from './webhooks.js';
 export type {
   CabecerasDeWebhook,
   EventoCertificacionFinalizada,
-  EventoDesconocido,
   EventoDeWebhook,
   EventoPrueba,
   EventoRespaldoFinalizado,

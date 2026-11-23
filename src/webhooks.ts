@@ -44,19 +44,11 @@ export interface EventoPrueba {
   fecha: string;
 }
 
-/** Los eventos que esta versión del SDK conoce, discriminados por `evento`. */
-export type EventoDeWebhook = EventoCertificacionFinalizada | EventoRespaldoFinalizado | EventoPrueba;
-
 /**
- * Un evento que esta versión del SDK no conoce: se devuelve tal como llegó, para que un evento nuevo
- * de la API no rompa a un receptor con un SDK anterior.
+ * Los eventos que esta versión del SDK conoce, discriminados por `evento`. La API puede agregar eventos:
+ * uno que el SDK no conoce llega igual, con su `evento`, aunque el tipo no lo nombre.
  */
-export interface EventoDesconocido {
-  evento: string;
-  id: string;
-  fecha: string;
-  [campo: string]: unknown;
-}
+export type EventoDeWebhook = EventoCertificacionFinalizada | EventoRespaldoFinalizado | EventoPrueba;
 
 export interface OpcionesDeVerificacion {
   /** Diferencia máxima entre `X-Enrolamiento-Fecha` y el reloj, en milisegundos. Por omisión, 300000 (5 minutos). */
@@ -144,7 +136,7 @@ function comprobarFecha(fecha: string, opciones: OpcionesDeVerificacion): void {
   }
 }
 
-function leerEvento(bytes: Uint8Array): EventoDeWebhook | EventoDesconocido {
+function leerEvento(bytes: Uint8Array): EventoDeWebhook {
   let json: unknown;
   try {
     json = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
@@ -154,13 +146,18 @@ function leerEvento(bytes: Uint8Array): EventoDeWebhook | EventoDesconocido {
   if (typeof json !== 'object' || json === null || Array.isArray(json) || !('evento' in json) || typeof json.evento !== 'string') {
     throw new ErrorDeFirma('El cuerpo verificado no es un evento: no es un objeto JSON con `evento` de texto.');
   }
-  return json as EventoDeWebhook | EventoDesconocido;
+  // Un `evento` desconocido se devuelve igual: un evento nuevo de la API no debe romper a un SDK anterior.
+  return json as EventoDeWebhook;
 }
 
 export const webhooks = {
   /**
    * Verifica una entrega y devuelve su evento. Primero comprueba la firma y la fecha; solo después lee el cuerpo.
    * Lanza `ErrorDeFirma` si la entrega no pasa (responda con un 4xx) y `ErrorDeConfiguracion` si falta el secreto.
+   *
+   * La API puede agregar eventos nuevos. Un evento que esta versión del SDK no conoce se devuelve igual, sin
+   * cambios, aunque su `evento` no figure en `EventoDeWebhook`: deje siempre una rama `default` para un `evento`
+   * que no reconozca (respóndale con un 2xx e ignórelo), y no la use para afirmar que no puede ocurrir.
    *
    * @param cuerpoCrudo El cuerpo tal como llegó, sin parsear.
    * @param secreto Por omisión, `ENROLAMIENTO_WEBHOOK_SECRETO`.
@@ -170,7 +167,7 @@ export const webhooks = {
     cabeceras: CabecerasDeWebhook,
     secreto?: string,
     opciones: OpcionesDeVerificacion = {},
-  ): EventoDeWebhook | EventoDesconocido {
+  ): EventoDeWebhook {
     const clave = resolverSecreto(secreto);
     const bytes = bytesDelCuerpo(cuerpoCrudo);
     const fecha = exigirCabecera(cabeceras, CABECERA_FECHA);

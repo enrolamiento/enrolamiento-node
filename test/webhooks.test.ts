@@ -5,7 +5,6 @@ import {
   webhooks,
   type EventoCertificacionFinalizada,
   type EventoDeWebhook,
-  type EventoDesconocido,
 } from '../src/webhooks.js';
 
 const SECRETO = 'a3f1c9e07b2d4e6f8a1b3c5d7e9f0a2b4c6d8e0f1a3b5c7d9e1f3a5b7c9d1e3f';
@@ -41,7 +40,7 @@ function cabecerasDe(cuerpo: string, secreto = SECRETO, fecha = FECHA): Record<s
 }
 
 /** `secreto` en `null` llama a `verificar` sin secreto. */
-function verificar(cuerpo: unknown, cabeceras: unknown, secreto: string | null = SECRETO): EventoDeWebhook | EventoDesconocido {
+function verificar(cuerpo: unknown, cabeceras: unknown, secreto: string | null = SECRETO): EventoDeWebhook {
   return webhooks.verificar(cuerpo as string, cabeceras as Headers, secreto ?? undefined, { ahora: AHORA });
 }
 

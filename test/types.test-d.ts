@@ -4,10 +4,13 @@ import { expectTypeOf, test } from 'vitest';
 import Enrolamiento, {
   Ambiente,
   EstadoCertificacion,
+  type EventoPrueba,
   type OpcionesDePedido,
   type ParamsDe,
   type PromesaDeApi,
+  type Respaldo,
   type RespuestaDe,
+  webhooks,
 } from '../src/index.js';
 
 const cliente = new Enrolamiento();
@@ -112,4 +115,17 @@ test('los grupos son de solo lectura', () => {
   cliente.caf = cliente.caf;
   // @ts-expect-error `v1` es readonly
   cliente.certificaciones.v1 = cliente.certificaciones.v1;
+});
+
+test('el evento de un webhook se discrimina por `evento` sin conversiones', () => {
+  const e = webhooks.verificar('', {});
+  if (e.evento === 'certificacion.finalizada') {
+    expectTypeOf(e.resolucion).toEqualTypeOf<{ numero: number; fecha: string } | null>();
+    expectTypeOf(e.respaldo).toEqualTypeOf<Respaldo | null>();
+  }
+  if (e.evento === 'prueba') {
+    expectTypeOf(e).toEqualTypeOf<EventoPrueba>();
+    // @ts-expect-error `prueba` no trae `rut`
+    void e.rut;
+  }
 });
