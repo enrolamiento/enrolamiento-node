@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer';
-import { ErrorDeConexion, ErrorDeConfiguracion, errorDeRespuesta } from './errors.js';
+import { ErrorDeApi, ErrorDeConexion, ErrorDeConfiguracion, errorDeRespuesta } from './errors.js';
+import { decidirReintento } from './retry.js';
 import { VERSION } from './version.js';
 
 /** Lo que el SDK necesita saber de una operación del contrato para armar su pedido. Sale de `npm run generate`. */
@@ -37,9 +38,12 @@ export interface OpcionesDeCliente {
   urlBase?: string;
   /** Tiempo de espera de cada intento, en milisegundos. Por omisión, 65000. */
   timeoutMs?: number;
-  /** Reintentos automáticos como máximo. Por omisión, 2. */
+  /** Reintentos automáticos como máximo: un entero de 0 a 10. Por omisión, 2. */
   maxReintentos?: number;
-  /** Espera más larga que el SDK acepta antes de un reintento, en milisegundos. Por omisión, 30000. */
+  /**
+   * Espera más larga que el SDK acepta antes de un reintento, en milisegundos (de 0 a 2147483647). Un error que
+   * pide esperar más no se reintenta: se lanza. Por omisión, 30000.
+   */
   esperaMaximaMs?: number;
   /** `fetch` a usar. Por omisión, el global. */
   fetch?: typeof fetch;
@@ -50,6 +54,7 @@ export interface OpcionesDeCliente {
 /** Opciones de un pedido. Ganan a las del cliente. */
 export interface OpcionesDePedido {
   timeoutMs?: number;
+  /** Reintentos automáticos como máximo para esta llamada: un entero de 0 a 10. Gana al del cliente. */
   maxReintentos?: number;
   /** Cancela el pedido. Cancelarlo no es un tiempo agotado: lanza `ErrorDeConexion` con `tiempoAgotado: false`. */
   signal?: AbortSignal;
@@ -96,6 +101,9 @@ const URL_BASE = 'https://api.enrolamiento.cl';
 const TIMEOUT_MS = 65000;
 /** El mayor plazo que acepta `setTimeout`; uno mayor dispara de inmediato y Node avisa por consola. */
 const TIMEOUT_MAXIMO_MS = 2147483647;
+const MAX_REINTENTOS = 2;
+const MAX_REINTENTOS_TOPE = 10;
+const ESPERA_MAXIMA_MS = 30000;
 
 /** Un pedido listo para enviar. Se arma una vez y sirve para cada intento. */
 interface PedidoArmado {
@@ -105,6 +113,10 @@ interface PedidoArmado {
   cuerpo: string | undefined;
   /** Tiempo de espera de cada intento, ya validado. */
   timeoutMs: number;
+  /** Reintentos como máximo, ya validados. */
+  maxReintentos: number;
+  /** Espera más larga aceptada antes de un reintento, ya validada. */
+  esperaMaximaMs: number;
 }
 
 /** Arma y envía los pedidos a la API. `Enrolamiento` lo extiende con un método por operación. */
@@ -123,7 +135,20 @@ export class Nucleo {
 
   async #ejecutar<T>(op: Operacion, params: Record<string, unknown>, opciones: OpcionesDePedido): Promise<DatosYRespuesta<T>> {
     const pedido = this.#armar(op, params, opciones);
-    return this.#intentar<T>(op, pedido, opciones);
+    const { signal } = opciones;
+    for (let intento = 1; ; intento++) {
+      try {
+        return await this.#intentar<T>(op, pedido, opciones);
+      } catch (error) {
+        // Lo que canceló el llamador no se repite, aunque la operación sea idempotente.
+        if (signal?.aborted) throw error;
+        if (!(error instanceof ErrorDeApi || error instanceof ErrorDeConexion)) throw error;
+        const { maxReintentos, esperaMaximaMs } = pedido;
+        const { reintentar, esperaMs } = decidirReintento(op, error, intento, { maxReintentos, esperaMaximaMs });
+        if (!reintentar) throw error;
+        await esperar(op, esperaMs, signal);
+      }
+    }
   }
 
   /** Valida los parámetros y arma URL, cabeceras y cuerpo. Lanza `ErrorDeConfiguracion` sin tocar la red. */
@@ -185,7 +210,9 @@ export class Nucleo {
     const textoQuery = query.toString();
     const url = `${urlBase}${ruta}${textoQuery === '' ? '' : `?${textoQuery}`}`;
     const timeoutMs = resolverTimeout(op, opciones.timeoutMs, this.#opciones.timeoutMs);
-    return { url, metodo: op.metodo, cabeceras, cuerpo, timeoutMs };
+    const maxReintentos = resolverMaxReintentos(op, opciones.maxReintentos, this.#opciones.maxReintentos);
+    const esperaMaximaMs = resolverEsperaMaxima(op, this.#opciones.esperaMaximaMs);
+    return { url, metodo: op.metodo, cabeceras, cuerpo, timeoutMs, maxReintentos, esperaMaximaMs };
   }
 
   /** La cabecera `Authorization`. Se resuelve en el primer pedido para que el paquete se importe sin entorno. */
@@ -266,6 +293,46 @@ function resolverTimeout(op: Operacion, delPedido: unknown, delCliente: unknown)
     );
   }
   return valor;
+}
+
+/** Los reintentos como máximo: los de la llamada, los del cliente o 2. Un entero de 0 a 10. */
+function resolverMaxReintentos(op: Operacion, delPedido: unknown, delCliente: unknown): number {
+  const valor = delPedido !== undefined ? delPedido : delCliente !== undefined ? delCliente : MAX_REINTENTOS;
+  if (typeof valor !== 'number' || !Number.isInteger(valor) || valor < 0 || valor > MAX_REINTENTOS_TOPE) {
+    throw new ErrorDeConfiguracion(
+      `${op.id}: \`maxReintentos\` debe ser un entero de 0 a ${MAX_REINTENTOS_TOPE}; se recibió ${describir(valor)}.`,
+    );
+  }
+  return valor;
+}
+
+/** La espera más larga antes de un reintento: la del cliente o 30000. Un número finito de 0 a 2147483647. */
+function resolverEsperaMaxima(op: Operacion, delCliente: unknown): number {
+  const valor = delCliente !== undefined ? delCliente : ESPERA_MAXIMA_MS;
+  if (typeof valor !== 'number' || !Number.isFinite(valor) || valor < 0 || valor > TIMEOUT_MAXIMO_MS) {
+    throw new ErrorDeConfiguracion(
+      `${op.id}: \`esperaMaximaMs\` debe ser un número de 0 a ${TIMEOUT_MAXIMO_MS}; se recibió ${describir(valor)}.`,
+    );
+  }
+  return valor;
+}
+
+/**
+ * Espera `esperaMs` antes de un reintento. Si `signal` aborta durante la espera, rechaza en el acto con
+ * `ErrorDeConexion` (`tiempoAgotado: false`) y no hay otro intento.
+ */
+function esperar(op: Operacion, esperaMs: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolver, rechazar) => {
+    const cancelado = () => {
+      clearTimeout(temporizador);
+      rechazar(new ErrorDeConexion(op.id, { tiempoAgotado: false, causa: signal?.reason }));
+    };
+    const temporizador = setTimeout(() => {
+      signal?.removeEventListener('abort', cancelado);
+      resolver();
+    }, esperaMs);
+    signal?.addEventListener('abort', cancelado, { once: true });
+  });
 }
 
 /**

@@ -35,6 +35,25 @@ const CAF_DESCARGAR = operacion({
   idempotente: false,
   ambiente: 'query',
   ambienteObligatorio: true,
+  // Las listas de `x-reintentable` del contrato (las de `nunca`, recortadas).
+  reintentable: {
+    automatico: ['409', '429'],
+    manual: [
+      'CAF_UNKNOWN',
+      'CNX_HTTP_ERROR_500',
+      'CNX_HTTP_ERROR_CLOSED',
+      'CNX_HTTP_ERROR_REMOTE',
+      'CNX_HTTP_ERROR_RETRY',
+      'CNX_HTTP_ERROR_SSLTLS',
+      'CNX_HTTP_ERROR_TIMEOUT',
+      'ERROR_GENERAL',
+      'FUNCION_NO_VERIFICABLE',
+      'RESP_HTTP_ERROR',
+      'SEC_USER_NOT_AUTHENTICATED',
+      'UKN',
+    ],
+    nunca: ['CAF_DENIED_SII_EXCEED', 'CERT_REVOCADO', 'SEC_EMP_NOT_AUTHORIZED'],
+  },
 });
 
 const EMPRESAS_PERMISOS = operacion({
@@ -372,7 +391,7 @@ describe('respuesta', () => {
     const cabeceras = { 'X-Codigo-Error': 'SII_ERROR_CXN', 'X-Reintentable': 'si' };
     const f = fetchFalso(() => new Response('SII_ERROR_CXN:No hay conexión', { status: 500, headers: cabeceras }));
     const op = operacion({ id: 'certificaciones_v1_consultar' });
-    const error: unknown = await cliente(f).pedir(op, {}).catch((e: unknown) => e);
+    const error: unknown = await cliente(f).pedir(op, {}, { maxReintentos: 0 }).catch((e: unknown) => e);
 
     const esperado = errorDeRespuesta(op.id, 500, new Headers(cabeceras), 'SII_ERROR_CXN:No hay conexión');
     expect(error).toBeInstanceOf(ErrorDeNegocio);
@@ -392,7 +411,8 @@ describe('respuesta', () => {
   test('un fetch que rechaza lanza ErrorDeConexion con tiempoAgotado false', async () => {
     const causa = new TypeError('fetch failed');
     const f = fetchFalso(() => Promise.reject(causa));
-    const error: unknown = await cliente(f).pedir(operacion({ id: 'caf_v1_descargar' }), {}).catch((e: unknown) => e);
+    const params = { rut: '1-9', tipoDocumento: 33, cantidad: 10, ambiente: 0 };
+    const error: unknown = await cliente(f).pedir(CAF_DESCARGAR, params).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ErrorDeConexion);
     expect(error).toMatchObject({ tiempoAgotado: false, operacion: 'caf_v1_descargar', cause: causa });
   });
@@ -411,7 +431,7 @@ describe('respuesta', () => {
   test('pasado timeoutMs aborta y lanza ErrorDeConexion con tiempoAgotado true', async () => {
     vi.useFakeTimers();
     const f = fetchColgado();
-    const promesa = cliente(f, { timeoutMs: 65000 }).pedir(operacion(), {}, { timeoutMs: 1000 });
+    const promesa = cliente(f, { timeoutMs: 65000 }).pedir(operacion(), {}, { timeoutMs: 1000, maxReintentos: 0 });
     const resultado = promesa.then(
       () => 'resolvió',
       (e: unknown) => e,
@@ -456,13 +476,234 @@ describe('respuesta', () => {
   test('timeoutMs del cliente se aplica si el pedido no trae el suyo', async () => {
     vi.useFakeTimers();
     const f = fetchColgado();
-    const resultado = cliente(f, { timeoutMs: 5000 })
+    const resultado = cliente(f, { timeoutMs: 5000, maxReintentos: 0 })
       .pedir(operacion(), {})
       .catch((e: unknown) => e);
     await vi.advanceTimersByTimeAsync(4999);
     expect(f.pedidos[0]!.signal!.aborted).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
     await expect(resultado).resolves.toMatchObject({ tiempoAgotado: true });
+  });
+});
+
+describe('reintentos', () => {
+  const CONSULTAR = operacion({
+    id: 'empresas_v1_consultar',
+    metodo: 'POST',
+    reintentable: { automatico: ['409', '429', 'SII_ERROR_CXN'], manual: ['ERROR_GENERAL'], nunca: [] },
+  });
+  const CAF_PARAMS = { rut: '1-9', tipoDocumento: 33, cantidad: 10, ambiente: 0, Data: 'cert', Contrasenna: 'pw' };
+
+  /** Un 500 con `SII_ERROR_CXN` cuyo mensaje dice qué intento fue. */
+  function sinConexionConElSii(intento: number): Response {
+    return new Response(`SII_ERROR_CXN:intento ${intento}`, { status: 500, headers: { 'X-Codigo-Error': 'SII_ERROR_CXN' } });
+  }
+
+  /** Un `fetch` que contesta `SII_ERROR_CXN` hasta el intento `exitoEn` (exclusivo) y 200 desde ahí. */
+  function fetchQueFallaHasta(exitoEn = Infinity) {
+    let intento = 0;
+    return fetchFalso(() => (++intento < exitoEn ? sinConexionConElSii(intento) : respuestaJson({ intento })));
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    // Azar 0.5: el retroceso queda en 500, 1000, 2000… exactos.
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test('reintenta SII_ERROR_CXN en una operación idempotente y devuelve el 200 del tercer intento', async () => {
+    const f = fetchQueFallaHasta(3);
+    const resultado = cliente(f)
+      .pedir(CONSULTAR, {})
+      .then(
+        (datos) => datos,
+        (e: unknown) => e,
+      );
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.fn).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(499);
+    expect(f.fn).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(f.fn).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(f.fn).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(f.fn).toHaveBeenCalledTimes(3);
+    await expect(resultado).resolves.toEqual({ intento: 3 });
+    // Cada intento es el mismo pedido.
+    expect(new Set(f.pedidos.map((p) => `${p.metodo} ${p.url} ${p.cabeceras.get('Authorization')}`)).size).toBe(1);
+  });
+
+  test('agotados los reintentos lanza el último error', async () => {
+    const f = fetchQueFallaHasta();
+    const resultado = cliente(f)
+      .pedir(CONSULTAR, {})
+      .catch((e: unknown) => e);
+    await vi.runAllTimersAsync();
+    const error = await resultado;
+    expect(f.fn).toHaveBeenCalledTimes(3);
+    expect(error).toBeInstanceOf(ErrorDeNegocio);
+    expect(error).toMatchObject({ codigo: 'SII_ERROR_CXN', mensaje: 'intento 3' });
+  });
+
+  test('maxReintentos de la llamada gana al del cliente', async () => {
+    const masQueElCliente = fetchQueFallaHasta();
+    const uno = cliente(masQueElCliente, { maxReintentos: 0 })
+      .pedir(CONSULTAR, {}, { maxReintentos: 3 })
+      .catch((e: unknown) => e);
+    await vi.runAllTimersAsync();
+    await expect(uno).resolves.toMatchObject({ mensaje: 'intento 4' });
+    expect(masQueElCliente.fn).toHaveBeenCalledTimes(4);
+
+    const menosQueElCliente = fetchQueFallaHasta();
+    const otro = cliente(menosQueElCliente, { maxReintentos: 5 })
+      .pedir(CONSULTAR, {}, { maxReintentos: 0 })
+      .catch((e: unknown) => e);
+    await vi.runAllTimersAsync();
+    await expect(otro).resolves.toMatchObject({ mensaje: 'intento 1' });
+    expect(menosQueElCliente.fn).toHaveBeenCalledTimes(1);
+
+    // Sin maxReintentos en la llamada vale el del cliente.
+    const delCliente = fetchQueFallaHasta();
+    const tercero = cliente(delCliente, { maxReintentos: 1 })
+      .pedir(CONSULTAR, {})
+      .catch((e: unknown) => e);
+    await vi.runAllTimersAsync();
+    await tercero;
+    expect(delCliente.fn).toHaveBeenCalledTimes(2);
+  });
+
+  test('un signal abortado durante la espera corta sin otro intento', async () => {
+    const f = fetchQueFallaHasta();
+    const controlador = new AbortController();
+    const resultado = cliente(f)
+      .pedir(CONSULTAR, {}, { signal: controlador.signal })
+      .then(
+        () => 'resolvió',
+        (e: unknown) => e,
+      );
+    await vi.advanceTimersByTimeAsync(100);
+    expect(f.fn).toHaveBeenCalledTimes(1);
+
+    controlador.abort();
+    const error = await resultado;
+    expect(error).toBeInstanceOf(ErrorDeConexion);
+    expect(error).toMatchObject({ tiempoAgotado: false, operacion: 'empresas_v1_consultar' });
+
+    await vi.runAllTimersAsync();
+    expect(f.fn).toHaveBeenCalledTimes(1);
+  });
+
+  test('un signal que aborta durante un intento no se reintenta, aunque la operación sea idempotente', async () => {
+    const f = fetchColgado();
+    const controlador = new AbortController();
+    const resultado = cliente(f)
+      .pedir(CONSULTAR, {}, { signal: controlador.signal })
+      .catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(100);
+    controlador.abort();
+    await expect(resultado).resolves.toMatchObject({ name: 'ErrorDeConexion', tiempoAgotado: false });
+    await vi.runAllTimersAsync();
+    expect(f.fn).toHaveBeenCalledTimes(1);
+  });
+
+  test('caf_v1_descargar (no idempotente) se intenta una sola vez ante falla de red, tiempo agotado del SDK o 504', async () => {
+    const generoso: OpcionesDeCliente = { maxReintentos: 10, esperaMaximaMs: 2147483647 };
+
+    const red = fetchFalso(() => Promise.reject(new TypeError('fetch failed')));
+    const deRed = cliente(red, generoso)
+      .pedir(CAF_DESCARGAR, CAF_PARAMS)
+      .catch((e: unknown) => e);
+    await vi.runAllTimersAsync();
+    await expect(deRed).resolves.toMatchObject({ name: 'ErrorDeConexion', tiempoAgotado: false });
+    expect(red.fn).toHaveBeenCalledTimes(1);
+
+    const colgado = fetchColgado();
+    const deTiempo = cliente(colgado, generoso)
+      .pedir(CAF_DESCARGAR, CAF_PARAMS, { timeoutMs: 10 })
+      .catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(deTiempo).resolves.toMatchObject({ name: 'ErrorDeConexion', tiempoAgotado: true });
+    await vi.runAllTimersAsync();
+    expect(colgado.fn).toHaveBeenCalledTimes(1);
+
+    const pasarela = fetchFalso(() => new Response('', { status: 504 }));
+    const de504 = cliente(pasarela, generoso)
+      .pedir(CAF_DESCARGAR, CAF_PARAMS)
+      .catch((e: unknown) => e);
+    await vi.runAllTimersAsync();
+    await expect(de504).resolves.toMatchObject({ name: 'ErrorDeTiempoAgotado', status: 504 });
+    expect(pasarela.fn).toHaveBeenCalledTimes(1);
+
+    const manual = fetchFalso(
+      () =>
+        new Response('CNX_HTTP_ERROR_500:falló', {
+          status: 500,
+          headers: { 'X-Codigo-Error': 'CNX_HTTP_ERROR_500', 'X-Reintentable': 'si' },
+        }),
+    );
+    const deManual = cliente(manual, generoso)
+      .pedir(CAF_DESCARGAR, CAF_PARAMS)
+      .catch((e: unknown) => e);
+    await vi.runAllTimersAsync();
+    await expect(deManual).resolves.toMatchObject({ codigo: 'CNX_HTTP_ERROR_500' });
+    expect(manual.fn).toHaveBeenCalledTimes(1);
+  });
+
+  test('el límite de tasa espera 60000 más el azar y reintenta si esperaMaximaMs lo permite', async () => {
+    let intento = 0;
+    const f = fetchFalso(() => (++intento === 1 ? new Response('', { status: 409 }) : respuestaJson({ intento })));
+    const resultado = cliente(f, { esperaMaximaMs: 120000 })
+      .pedir(CAF_DESCARGAR, CAF_PARAMS)
+      .catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(64999);
+    expect(f.fn).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(f.fn).toHaveBeenCalledTimes(2);
+    await expect(resultado).resolves.toEqual({ intento: 2 });
+
+    // Con el tope por omisión (30000) no espera: lanza el ErrorDeLimite.
+    const g = fetchFalso(() => new Response('', { status: 409 }));
+    const error: unknown = await cliente(g).pedir(CAF_DESCARGAR, CAF_PARAMS).catch((e: unknown) => e);
+    expect(error).toMatchObject({ name: 'ErrorDeLimite' });
+    expect(g.fn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('opciones de reintento', () => {
+  test('maxReintentos fuera de 0..10 o no entero y esperaMaximaMs fuera de 0..2147483647 lanzan ErrorDeConfiguracion sin llamar a fetch', async () => {
+    const f = fetchFalso();
+    const avisos = vi.fn();
+    process.on('warning', avisos);
+    try {
+      for (const maxReintentos of [-1, 11, 1.5, Number.NaN, Infinity, '2', null]) {
+        const delPedido = cliente(f).pedir(operacion(), {}, { maxReintentos: maxReintentos as number });
+        await expect(delPedido).rejects.toThrow(ErrorDeConfiguracion);
+        await expect(delPedido).rejects.toThrow(/maxReintentos/);
+        const delCliente = cliente(f, { maxReintentos: maxReintentos as number }).pedir(operacion(), {});
+        await expect(delCliente).rejects.toThrow(ErrorDeConfiguracion);
+      }
+      for (const esperaMaximaMs of [-1, Number.NaN, Infinity, -Infinity, 2147483648, '1000', null]) {
+        const promesa = cliente(f, { esperaMaximaMs: esperaMaximaMs as number }).pedir(operacion(), {});
+        await expect(promesa).rejects.toThrow(ErrorDeConfiguracion);
+        await expect(promesa).rejects.toThrow(/esperaMaximaMs/);
+      }
+      expect(f.fn).not.toHaveBeenCalled();
+
+      // Los extremos válidos llegan a fetch.
+      await cliente(f, { maxReintentos: 10, esperaMaximaMs: 0 }).pedir(operacion(), {}, { maxReintentos: 0 });
+      await cliente(f, { maxReintentos: 0, esperaMaximaMs: 2147483647 }).pedir(operacion(), {}, { maxReintentos: 10 });
+      expect(f.fn).toHaveBeenCalledTimes(2);
+      await new Promise((resolver) => setImmediate(resolver));
+      expect(avisos).not.toHaveBeenCalled();
+    } finally {
+      process.off('warning', avisos);
+    }
   });
 });
 
