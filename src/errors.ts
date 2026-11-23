@@ -116,7 +116,7 @@ export function errorDeRespuesta(operacion: string, status: number, cabeceras: H
     return new ErrorDeLimite({ ...comun, mensaje: texto || 'Se excedió el número de pedidos permitido.' });
   }
   if (status === 401) {
-    const mensaje = mensajeDeFramework(cuerpo) ?? (texto || 'La API rechazó las credenciales.');
+    const mensaje = mensajeNoVacio(mensajeDeFramework(cuerpo) ?? texto, 'La API rechazó las credenciales.');
     return new ErrorDeAutenticacion({ ...comun, mensaje });
   }
   if (status === 504 && codigoEnCabecera === null) {
@@ -133,7 +133,7 @@ export function errorDeRespuesta(operacion: string, status: number, cabeceras: H
   }
   const mensajeFramework = mensajeDeFramework(cuerpo);
   if (mensajeFramework !== null) {
-    return new ErrorDeFramework({ ...comun, mensaje: mensajeFramework });
+    return new ErrorDeFramework({ ...comun, mensaje: mensajeNoVacio(mensajeFramework) });
   }
   const conCodigo = CODIGO.exec(cuerpo);
   if (conCodigo) {
@@ -168,8 +168,9 @@ function leerReintentable(valor: string | null): Reintentable | null {
   return v === 'si' || v === 'no' || v === 'desconocido' ? v : null;
 }
 
-function mensajeNoVacio(mensaje: string): string {
-  return mensaje.trim() === '' ? 'La API respondió con un error sin mensaje.' : mensaje;
+/** `mensaje`, o `porOmision` si está vacío o en blanco: `mensaje` nunca queda vacío. */
+function mensajeNoVacio(mensaje: string, porOmision = 'La API respondió con un error sin mensaje.'): string {
+  return mensaje.trim() === '' ? porOmision : mensaje;
 }
 
 /**

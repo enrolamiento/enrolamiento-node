@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { ErrorDeConfiguracion, ErrorDeFirma } from './errors.js';
+import { EnrolamientoError, ErrorDeConfiguracion, ErrorDeFirma } from './errors.js';
 
 // Tipos escritos a mano de la guía «Webhooks» del portal: el contrato OpenAPI no describe los webhooks.
 
@@ -68,8 +68,11 @@ const TOLERANCIA_MS = 300_000;
 /** `yyyy-MM-ddTHH:mm:ss`, fracción de segundo opcional, con desfase (`-03:00`) o `Z`. */
 const FORMATO_FECHA = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
-function resolverSecreto(secreto: string | undefined): string {
+function resolverSecreto(secreto: unknown): string {
   const valor = secreto ?? process.env['ENROLAMIENTO_WEBHOOK_SECRETO'];
+  if (valor !== undefined && typeof valor !== 'string') {
+    throw new ErrorDeConfiguracion('El secreto de los webhooks debe ser un texto.');
+  }
   if (!valor) {
     throw new ErrorDeConfiguracion(
       'Falta el secreto de los webhooks: páselo como argumento o defina ENROLAMIENTO_WEBHOOK_SECRETO en el entorno.',
@@ -84,6 +87,9 @@ function calcularFirma(secreto: string, fecha: string, cuerpo: Uint8Array): stri
 }
 
 function leerCabecera(cabeceras: CabecerasDeWebhook, nombre: string): string | null {
+  if (typeof cabeceras !== 'object' || cabeceras === null) {
+    throw new ErrorDeConfiguracion('Las cabeceras de la entrega van en un objeto (`Headers` o `req.headers`).');
+  }
   let valor: string | string[] | null | undefined;
   if (typeof cabeceras.get === 'function') {
     valor = (cabeceras as Headers).get(nombre);
@@ -121,6 +127,19 @@ function compararFirma(recibida: string, esperada: string): boolean {
   const a = Buffer.from(recibida.slice(PREFIJO_FIRMA.length), 'utf8');
   const b = Buffer.from(esperada, 'utf8');
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/**
+ * Corre `fn` y convierte lo que lance sin ser del SDK (un `TypeError` de un argumento con otra forma) en
+ * `ErrorDeConfiguracion`, con un mensaje fijo: el error original podría traer el secreto o el cuerpo.
+ */
+function sinErroresAjenos<T>(funcion: string, fn: () => T): T {
+  try {
+    return fn();
+  } catch (error) {
+    if (error instanceof EnrolamientoError) throw error;
+    throw new ErrorDeConfiguracion(`webhooks.${funcion}: los argumentos no tienen la forma esperada.`);
+  }
 }
 
 /** La ventana contra entregas repetidas. Un valor no finito la abriría sin límite, así que se rechaza. */
@@ -188,21 +207,23 @@ export const webhooks = {
     cuerpoCrudo: string | Uint8Array | ArrayBuffer,
     cabeceras: CabecerasDeWebhook,
     secreto?: string,
-    opciones: OpcionesDeVerificacion = {},
+    opciones?: OpcionesDeVerificacion | null,
   ): EventoDeWebhook {
-    const clave = resolverSecreto(secreto);
-    const ventana = resolverVentana(opciones);
-    const bytes = bytesDelCuerpo(cuerpoCrudo);
-    const fecha = exigirCabecera(cabeceras, CABECERA_FECHA);
-    const firma = exigirCabecera(cabeceras, CABECERA_FIRMA);
-    if (!compararFirma(firma, calcularFirma(clave, fecha, bytes))) {
-      throw new ErrorDeFirma(
-        `La cabecera ${CABECERA_FIRMA} no corresponde al cuerpo y a ${CABECERA_FECHA}: ` +
-          'revise el secreto y que el cuerpo sea el crudo, sin modificar.',
-      );
-    }
-    comprobarFecha(fecha, ventana);
-    return leerEvento(bytes);
+    return sinErroresAjenos('verificar', () => {
+      const clave = resolverSecreto(secreto);
+      const ventana = resolverVentana(opciones ?? {});
+      const bytes = bytesDelCuerpo(cuerpoCrudo);
+      const fecha = exigirCabecera(cabeceras, CABECERA_FECHA);
+      const firma = exigirCabecera(cabeceras, CABECERA_FIRMA);
+      if (!compararFirma(firma, calcularFirma(clave, fecha, bytes))) {
+        throw new ErrorDeFirma(
+          `La cabecera ${CABECERA_FIRMA} no corresponde al cuerpo y a ${CABECERA_FECHA}: ` +
+            'revise el secreto y que el cuerpo sea el crudo, sin modificar.',
+        );
+      }
+      comprobarFecha(fecha, ventana);
+      return leerEvento(bytes);
+    });
   },
 
   /**
@@ -215,10 +236,12 @@ export const webhooks = {
     'X-Enrolamiento-Fecha': string;
     'X-Enrolamiento-Firma': string;
   } {
-    if (!secreto) throw new ErrorDeConfiguracion('Falta el secreto para firmar el webhook.');
-    return {
-      'X-Enrolamiento-Fecha': fecha,
-      'X-Enrolamiento-Firma': `${PREFIJO_FIRMA}${calcularFirma(secreto, fecha, Buffer.from(cuerpo, 'utf8'))}`,
-    };
+    return sinErroresAjenos('firmar', () => {
+      if (!secreto) throw new ErrorDeConfiguracion('Falta el secreto para firmar el webhook.');
+      return {
+        'X-Enrolamiento-Fecha': fecha,
+        'X-Enrolamiento-Firma': `${PREFIJO_FIRMA}${calcularFirma(secreto, fecha, Buffer.from(cuerpo, 'utf8'))}`,
+      };
+    });
   },
 };

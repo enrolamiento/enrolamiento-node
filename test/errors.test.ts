@@ -101,6 +101,17 @@ describe('errorDeRespuesta clasifica en el orden de la guía', () => {
     expect(e).toMatchObject({ mensaje: 'The request is invalid.', codigo: null });
   });
 
+  test('JSON con Message vacío o en blanco: el mensaje no queda vacío, en 400 y en 401', () => {
+    for (const cuerpo of ['{"Message":""}', '{"Message":"   "}']) {
+      const framework = clasificar(400, cuerpo);
+      expect(framework).toBeInstanceOf(ErrorDeFramework);
+      expect(framework.mensaje.trim(), cuerpo).not.toBe('');
+      const autenticacion = clasificar(401, cuerpo);
+      expect(autenticacion).toBeInstanceOf(ErrorDeAutenticacion);
+      expect(autenticacion.mensaje, cuerpo).toBe('La API rechazó las credenciales.');
+    }
+  });
+
   test('502 con HTML: negocio sin código, sin lanzar', () => {
     let e: ErrorDeApi | undefined;
     expect(() => {

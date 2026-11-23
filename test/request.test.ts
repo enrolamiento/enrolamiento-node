@@ -412,8 +412,13 @@ describe('ambiente', () => {
     expect(sinPrototipo).toBeInstanceOf(ErrorDeConfiguracion);
     expect((sinPrototipo as Error).message).toMatch(/object/);
 
-    const corto: unknown = await cliente(f).pedir(ENQUERY, { rut: '1-9', ambiente: 'abc' }).catch((e: unknown) => e);
-    expect((corto as Error).message).toContain('"abc"');
+    // Un texto corto tampoco se copia: podría ser una contraseña puesta en el lugar equivocado.
+    for (const corto of ['abc', 'pfx-clave-123']) {
+      const error: unknown = await cliente(f).pedir(ENQUERY, { rut: '1-9', ambiente: corto }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ErrorDeConfiguracion);
+      expect((error as Error).message).not.toContain(corto);
+      expect((error as Error).message).toContain(`string de ${corto.length} caracteres`);
+    }
     const numero: unknown = await cliente(f).pedir(ENQUERY, { rut: '1-9', ambiente: 2 }).catch((e: unknown) => e);
     expect((numero as Error).message).toMatch(/number 2/);
     expect(f.fn).not.toHaveBeenCalled();
@@ -869,6 +874,121 @@ describe('opciones de reintento', () => {
     } finally {
       process.off('warning', avisos);
     }
+  });
+});
+
+describe('todo lo que falla antes de la red es ErrorDeConfiguracion, sin el valor', () => {
+  /** Rechaza con ErrorDeConfiguracion, sin `prohibido` en el mensaje, y sin llamar a fetch. */
+  async function rechaza(f: ReturnType<typeof fetchFalso>, promesa: Promise<unknown>, prohibido?: string, nombre?: RegExp) {
+    const error: unknown = await promesa.then(
+      () => expect.fail('debía fallar'),
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(ErrorDeConfiguracion);
+    if (prohibido !== undefined) expect((error as Error).message).not.toContain(prohibido);
+    if (nombre !== undefined) expect((error as Error).message).toMatch(nombre);
+    expect((error as Error).cause).toBeUndefined();
+    expect(f.fn).not.toHaveBeenCalled();
+  }
+
+  test('un valor de cabecera con NUL, DEL, CR/LF o un carácter sobre U+00FF, en el cliente, en el pedido o en un parámetro', async () => {
+    for (const valor of ['secreto\0nul', 'secreto\x7fdel', 'secreto\r\nX-Otra: 1', 'secreto→flecha', 'secreto😀']) {
+      const f = fetchFalso();
+      await rechaza(f, cliente(f, { cabeceras: { 'X-Uno': valor } }).pedir(operacion(), {}), valor, /X-Uno/);
+      await rechaza(f, cliente(f).pedir(operacion(), {}, { cabeceras: { 'X-Dos': valor } }), valor, /X-Dos/);
+      const params = { rut: '1-9', tipoDocumento: 33, cantidad: 10, ambiente: 0, consultarSii: valor };
+      await rechaza(f, cliente(f).pedir(CAF_DESCARGAR, params), valor, /consultarSii/);
+    }
+    // Latin-1 y el tabulador sí van.
+    const f = fetchFalso();
+    await cliente(f, { cabeceras: { 'X-Uno': 'ñandú\tcañón' } }).pedir(operacion(), {});
+    expect(f.pedidos[0]!.cabeceras.get('X-Uno')).toBe('ñandú\tcañón');
+  });
+
+  test('un nombre de cabecera inválido o un valor que no es texto', async () => {
+    const f = fetchFalso();
+    await rechaza(f, cliente(f, { cabeceras: { 'X Uno: secreto': 'v' } }).pedir(operacion(), {}), 'secreto');
+    await rechaza(f, cliente(f).pedir(operacion(), {}, { cabeceras: { 'X-Uno': true as never } }), undefined, /X-Uno/);
+    await rechaza(f, cliente(f).pedir(operacion(), {}, { cabeceras: 'X-Uno: secreto' as never }), 'secreto', /cabeceras/);
+  });
+
+  test('un objeto sin prototipo en un parámetro de ruta o de query nombra el parámetro', async () => {
+    const f = fetchFalso();
+    const sinPrototipo = Object.create(null);
+    await rechaza(f, cliente(f).pedir(operacion({ ruta: '/v1/x/{rut}', enRuta: ['rut'] }), { rut: sinPrototipo }), undefined, /`rut`/);
+    await rechaza(f, cliente(f).pedir(operacion({ enQuery: ['pagina'] }), { pagina: sinPrototipo }), undefined, /`pagina`/);
+  });
+
+  test('credenciales que no se dejan convertir en texto', async () => {
+    const f = fetchFalso();
+    await rechaza(f, nucleo({ fetch: f.fetch, usuario: Object.create(null), apikey: APIKEY }).pedir(operacion(), {}), APIKEY);
+  });
+
+  test('un signal que no es AbortSignal y un fetch que no es función', async () => {
+    const f = fetchFalso();
+    await rechaza(f, cliente(f).pedir(operacion(), {}, { signal: { aborted: false } as never }), undefined, /signal/);
+    await rechaza(f, nucleo({ usuario: USUARIO, apikey: APIKEY, fetch: 'https://x' as never }).pedir(operacion(), {}), 'https://x', /fetch/);
+  });
+
+  test('opciones null valen como ausentes: en el cliente y en el pedido', async () => {
+    vi.stubEnv('ENROLAMIENTO_USUARIO', USUARIO);
+    vi.stubEnv('ENROLAMIENTO_APIKEY', APIKEY);
+    const original = globalThis.fetch;
+    const f = fetchFalso(() => respuestaJson({ RUT: '1-9' }));
+    globalThis.fetch = f.fetch;
+    try {
+      const c = new Enrolamiento(null as never);
+      await expect(c.certificaciones.v1.consultar({ rut: '1-9' }, null as never)).resolves.toEqual({ RUT: '1-9' });
+      await expect(cliente(f).pedir(operacion(), {}, null)).resolves.toEqual({ RUT: '1-9' });
+      await expect(cliente(f).pedir(operacion(), {}, { signal: null as never, cabeceras: null as never })).resolves.toEqual({
+        RUT: '1-9',
+      });
+      expect(f.fn).toHaveBeenCalledTimes(3);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
+
+describe('urlBase', () => {
+  test('acepta https y http solo hacia localhost, 127.0.0.1 o [::1]', async () => {
+    const f = fetchFalso();
+    for (const urlBase of ['https://api.ejemplo.cl', 'https://api.ejemplo.cl/base/', 'http://localhost:4010', 'http://127.0.0.1:4010/', 'http://[::1]:4010']) {
+      await cliente(f, { urlBase }).pedir(operacion(), {});
+    }
+    expect(f.pedidos.map((p) => p.url)).toEqual([
+      'https://api.ejemplo.cl/v1/prueba',
+      'https://api.ejemplo.cl/base/v1/prueba',
+      'http://localhost:4010/v1/prueba',
+      'http://127.0.0.1:4010/v1/prueba',
+      'http://[::1]:4010/v1/prueba',
+    ]);
+  });
+
+  test('rechaza http hacia otro host, credenciales, query, fragmento, otro protocolo o algo que no es URL, sin copiarla', async () => {
+    const f = fetchFalso();
+    const malas = [
+      'http://api.ejemplo.cl',
+      'http://127.0.0.2',
+      'https://usuario:clave@api.ejemplo.cl',
+      'https://usuario@api.ejemplo.cl',
+      'https://@api.ejemplo.cl',
+      'https://api.ejemplo.cl?clave=1',
+      'https://api.ejemplo.cl/?',
+      'https://api.ejemplo.cl#clave',
+      'ftp://api.ejemplo.cl',
+      'api.ejemplo.cl',
+      '',
+    ];
+    for (const urlBase of malas) {
+      const error: unknown = await cliente(f, { urlBase }).pedir(operacion(), {}).catch((e: unknown) => e);
+      expect(error, urlBase).toBeInstanceOf(ErrorDeConfiguracion);
+      expect((error as Error).message, urlBase).toMatch(/urlBase/);
+      if (urlBase !== '') expect((error as Error).message, urlBase).not.toContain(urlBase);
+    }
+    const noTexto: unknown = await cliente(f, { urlBase: 42 as never }).pedir(operacion(), {}).catch((e: unknown) => e);
+    expect(noTexto).toBeInstanceOf(ErrorDeConfiguracion);
+    expect(f.fn).not.toHaveBeenCalled();
   });
 });
 

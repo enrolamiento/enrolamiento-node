@@ -257,6 +257,29 @@ describe('webhooks.verificar', () => {
     expect(webhooks.verificar(CUERPO, cabecerasDe(CUERPO), SECRETO, { ahora: AHORA, toleranciaMs: 0 })).toEqual(CERTIFICACION);
   });
 
+  test('opciones null valen como ausentes', () => {
+    vi.stubEnv('ENROLAMIENTO_WEBHOOK_SECRETO', SECRETO);
+    const cabeceras = cabecerasDe(CUERPO, SECRETO, new Date().toISOString());
+    expect(webhooks.verificar(CUERPO, cabeceras, undefined, null as never).evento).toBe('certificacion.finalizada');
+  });
+
+  test('argumentos con otra forma lanzan ErrorDeConfiguracion sin copiar valores, no un TypeError', () => {
+    for (const cabeceras of [null, undefined, 5]) {
+      const e = errorDe(() => verificar(CUERPO, cabeceras));
+      expect(e, String(cabeceras)).toBeInstanceOf(ErrorDeConfiguracion);
+      expect(e.message).not.toContain(SECRETO);
+    }
+    const secretoRaro = errorDe(() => webhooks.verificar(CUERPO, cabecerasDe(CUERPO), 12345 as never, { ahora: AHORA }));
+    expect(secretoRaro).toBeInstanceOf(ErrorDeConfiguracion);
+    expect(secretoRaro.message).not.toContain('12345');
+    const cuerpoRaro = errorDe(() => webhooks.firmar({ clave: 'cuerpo-secreto' } as never, SECRETO));
+    expect(cuerpoRaro).toBeInstanceOf(ErrorDeConfiguracion);
+    expect(cuerpoRaro.message).not.toContain('cuerpo-secreto');
+    expect(cuerpoRaro.message).not.toContain(SECRETO);
+    const firmarSinPrototipo = errorDe(() => webhooks.firmar(CUERPO, Object.create(null)));
+    expect(firmarSinPrototipo).toBeInstanceOf(ErrorDeConfiguracion);
+  });
+
   test('sin secreto en el argumento ni en el entorno: ErrorDeConfiguracion', () => {
     const e = errorDe(() => verificar(CUERPO, cabecerasDe(CUERPO), null));
     expect(e).toBeInstanceOf(ErrorDeConfiguracion);

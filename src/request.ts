@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer';
-import { ErrorDeApi, ErrorDeConexion, ErrorDeConfiguracion, errorDeRespuesta } from './errors.js';
+import { EnrolamientoError, ErrorDeApi, ErrorDeConexion, ErrorDeConfiguracion, errorDeRespuesta } from './errors.js';
 import { decidirReintento } from './retry.js';
 import { VERSION } from './version.js';
 
@@ -117,6 +117,12 @@ const TIMEOUT_MAXIMO_MS = 2147483647;
 const MAX_REINTENTOS = 2;
 const MAX_REINTENTOS_TOPE = 10;
 const ESPERA_MAXIMA_MS = 30000;
+/** Un token de RFC 9110: lo que `Headers` acepta como nombre de cabecera. */
+const NOMBRE_DE_CABECERA = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+/** Lo que no va en el valor de una cabecera: controles (CR, LF, NUL…), DEL y lo que está sobre U+00FF. */
+const FUERA_DE_CABECERA = /[^\t\x20-\x7e\x80-\xff]/;
+/** Los hosts a los que `urlBase` puede llegar por `http:`: solo la máquina local. */
+const HOSTS_LOCALES = new Set(['localhost', '127.0.0.1', '[::1]']);
 
 /** Envía una operación con sus parámetros. Es lo que `recursos()` recibe para armar los métodos del cliente. */
 export type Pedir = <T>(
@@ -163,7 +169,15 @@ class Nucleo {
   }
 
   async #ejecutar<T>(op: Operacion, params: Record<string, unknown>, opciones: OpcionesDePedido): Promise<DatosYRespuesta<T>> {
-    const pedido = this.#armar(op, params, opciones);
+    let pedido: PedidoArmado;
+    try {
+      pedido = this.#armar(op, params, opciones);
+    } catch (error) {
+      if (error instanceof EnrolamientoError) throw error;
+      // Lo que falla antes de la red sin ser del SDK (un valor que no se deja convertir, p. ej.) no se copia: el
+      // error original puede traer el valor, que puede ser un secreto.
+      throw new ErrorDeConfiguracion(`${op.id}: no se pudo armar el pedido con los parámetros y las opciones recibidos.`);
+    }
     const signal = opciones.signal ?? undefined;
     for (let intento = 1; ; intento++) {
       try {
@@ -201,7 +215,7 @@ class Nucleo {
       if (valor === undefined || valor === null || valor === '') {
         throw new ErrorDeConfiguracion(`${op.id}: falta el parámetro de ruta \`${nombre}\`.`);
       }
-      const texto = String(valor);
+      const texto = comoTexto(op, nombre, valor);
       // encodeURIComponent deja los puntos y el parser de URL resuelve `.` y `..`: cambiarían el endpoint.
       if (texto === '.' || texto === '..') {
         throw new ErrorDeConfiguracion(`${op.id}: el parámetro de ruta \`${nombre}\` no puede ser "." ni "..".`);
@@ -215,7 +229,7 @@ class Nucleo {
       if (nombre === 'ambiente' && op.ambiente === 'query') continue;
       const valor = params[nombre];
       if (valor === undefined || valor === null) continue;
-      query.append(nombre, String(valor));
+      query.append(nombre, comoTexto(op, nombre, valor));
     }
     if (op.ambiente === 'query' && ambiente !== undefined) query.append('ambiente', String(ambiente));
     for (const [nombre, valor] of Object.entries(op.queryFija)) query.set(nombre, valor);
@@ -229,27 +243,39 @@ class Nucleo {
 
     const cabeceras = new Headers({ Accept: 'application/json', 'User-Agent': `enrolamiento-node/${VERSION}` });
     for (const extra of [this.#opciones.cabeceras, opciones.cabeceras]) {
-      for (const [nombre, valor] of Object.entries(extra ?? {})) cabeceras.set(nombre, valor);
+      if (extra === undefined || extra === null) continue;
+      if (typeof extra !== 'object' || Array.isArray(extra)) {
+        throw new ErrorDeConfiguracion(`${op.id}: \`cabeceras\` va en un objeto de nombre → valor; se recibió ${describir(extra)}.`);
+      }
+      for (const [nombre, valor] of Object.entries(extra)) {
+        if (valor === undefined) continue;
+        if (!NOMBRE_DE_CABECERA.test(nombre)) {
+          throw new ErrorDeConfiguracion(`${op.id}: una de las \`cabeceras\` tiene un nombre que no es válido en HTTP.`);
+        }
+        comprobarValorDeCabecera(op, `la cabecera \`${nombre}\``, valor);
+        cabeceras.set(nombre, valor);
+      }
     }
     for (const [nombre, cabecera] of Object.entries(op.enCabecera)) {
       const valor = params[nombre];
       if (valor === undefined) continue;
-      if (typeof valor !== 'string') {
-        throw new ErrorDeConfiguracion(
-          `${op.id}: \`${nombre}\` va en una cabecera y debe ser un texto; se recibió ${describir(valor)}.`,
-        );
-      }
-      if (/[\r\n]/.test(valor)) {
-        throw new ErrorDeConfiguracion(`${op.id}: \`${nombre}\` va en una cabecera y no puede tener saltos de línea.`);
-      }
+      comprobarValorDeCabecera(op, `\`${nombre}\` (va en una cabecera)`, valor);
       cabeceras.set(cabecera, valor);
     }
     if (cuerpo !== undefined) cabeceras.set('Content-Type', 'application/json');
     cabeceras.set('Authorization', autorizacion);
 
-    const urlBase = (this.#opciones.urlBase ?? URL_BASE).replace(/\/+$/, '');
+    const urlBase = resolverUrlBase(op, this.#opciones.urlBase);
     const textoQuery = query.toString();
     const url = `${urlBase}${ruta}${textoQuery === '' ? '' : `?${textoQuery}`}`;
+    const { fetch } = this.#opciones;
+    if (fetch !== undefined && fetch !== null && typeof fetch !== 'function') {
+      throw new ErrorDeConfiguracion(`${op.id}: \`fetch\` debe ser una función; se recibió ${describir(fetch)}.`);
+    }
+    const { signal } = opciones;
+    if (signal !== undefined && signal !== null && !(signal instanceof AbortSignal)) {
+      throw new ErrorDeConfiguracion(`${op.id}: \`signal\` debe ser un AbortSignal; se recibió ${describir(signal)}.`);
+    }
     const timeoutMs = resolverTimeout(op, opciones.timeoutMs, this.#opciones.timeoutMs);
     const maxReintentos = resolverMaxReintentos(op, opciones.maxReintentos, this.#opciones.maxReintentos);
     const esperaMaximaMs = resolverEsperaMaxima(op, this.#opciones.esperaMaximaMs);
@@ -352,6 +378,55 @@ function nombreParaMensaje(nombre: string): string {
   return limpio.length > 40 ? `${limpio.slice(0, 40)}…` : limpio;
 }
 
+/** Un parámetro de ruta o de query como texto. Un valor que no se deja convertir no se copia al mensaje. */
+function comoTexto(op: Operacion, nombre: string, valor: unknown): string {
+  try {
+    return String(valor);
+  } catch {
+    throw new ErrorDeConfiguracion(`${op.id}: el parámetro \`${nombre}\` no se puede convertir en texto; se recibió ${describir(valor)}.`);
+  }
+}
+
+/** Un valor de cabecera tiene que ser un texto sin controles, sin DEL y sin caracteres sobre U+00FF. */
+function comprobarValorDeCabecera(op: Operacion, que: string, valor: unknown): asserts valor is string {
+  if (typeof valor !== 'string') {
+    throw new ErrorDeConfiguracion(`${op.id}: ${que} debe ser un texto; se recibió ${describir(valor)}.`);
+  }
+  if (FUERA_DE_CABECERA.test(valor)) {
+    throw new ErrorDeConfiguracion(
+      `${op.id}: ${que} tiene caracteres que no van en una cabecera HTTP ` +
+        '(saltos de línea, caracteres de control o fuera de Latin-1).',
+    );
+  }
+}
+
+/**
+ * La URL base, sin `/` final. Solo `https:`, o `http:` hacia la máquina local: la cabecera Basic viajaría en claro.
+ * No puede traer credenciales, query ni fragmento. El mensaje no copia la URL: podría traer credenciales.
+ */
+function resolverUrlBase(op: Operacion, valor: unknown): string {
+  const texto = valor === undefined || valor === null ? URL_BASE : valor;
+  if (typeof texto !== 'string') {
+    throw new ErrorDeConfiguracion(`${op.id}: \`urlBase\` debe ser un texto; se recibió ${describir(texto)}.`);
+  }
+  let url: URL;
+  try {
+    url = new URL(texto);
+  } catch {
+    throw new ErrorDeConfiguracion(`${op.id}: \`urlBase\` no es una URL absoluta válida.`);
+  }
+  if (url.username !== '' || url.password !== '' || /^[^:/?#]+:\/\/[^/?#]*@/.test(texto.trim()) || /[?#]/.test(texto)) {
+    throw new ErrorDeConfiguracion(`${op.id}: \`urlBase\` no puede llevar credenciales, query ni fragmento.`);
+  }
+  if (!(url.protocol === 'https:' || (url.protocol === 'http:' && HOSTS_LOCALES.has(url.hostname)))) {
+    throw new ErrorDeConfiguracion(
+      `${op.id}: \`urlBase\` debe usar https (http solo hacia localhost, 127.0.0.1 o [::1]): ` +
+        'las credenciales viajarían en claro.',
+    );
+  }
+  return url.href.replace(/\/+$/, '');
+}
+
 /** El mensaje cuando falta `ambiente`: dónde definirlo. */
 function mensajeSinAmbiente(op: Operacion): string {
   return (
@@ -427,13 +502,14 @@ function esperar(op: Operacion, esperaMs: number, signal: AbortSignal | undefine
 }
 
 /**
- * Describe un valor recibido para un mensaje de error sin copiarlo entero: un valor fuera de lugar puede ser un
- * secreto. Da el tipo y, solo para números y textos de hasta 20 caracteres, el valor. Nunca lanza.
+ * Describe un valor recibido para un mensaje de error sin copiarlo: un valor fuera de lugar puede ser un secreto.
+ * Da el tipo; de un número, también el valor; de un texto, solo su largo. Nunca lanza.
  */
 function describir(valor: unknown): string {
   if (valor === null) return 'null';
+  if (Array.isArray(valor)) return 'un arreglo';
   if (typeof valor === 'number') return `number ${String(valor)}`;
-  if (typeof valor === 'string' && valor.length <= 20) return `string ${JSON.stringify(valor)}`;
+  if (typeof valor === 'string') return `string de ${valor.length} caracteres`;
   return typeof valor;
 }
 
