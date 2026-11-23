@@ -174,7 +174,7 @@ test('regenerar no cambia nada', () => {
   try {
     execFileSync(process.execPath, ['scripts/generate.mjs', '--out', directorio], { stdio: 'pipe' });
     const generados = readdirSync(directorio).sort();
-    expect(generados).toEqual(['enums.ts', 'operations.ts', 'schema.ts']);
+    expect(generados).toEqual(['enums.ts', 'operations.ts', 'resources.ts', 'schema.ts']);
     expect(readdirSync('src/generated').sort()).toEqual(generados);
     for (const archivo of generados) {
       const nuevo = readFileSync(join(directorio, archivo));
@@ -196,6 +196,7 @@ function contratoArmado(op: Record<string, unknown>, esquemas: Record<string, un
           operationId: 'x_v1_op',
           'x-sdk-group': 'x',
           'x-sdk-name': 'op',
+          summary: 'Operación de prueba.',
           'x-idempotente': true,
           'x-reintentable': { automatico: [], manual: [], nunca: [] },
           parameters: [
@@ -286,4 +287,61 @@ test('falla si un enum se exportaría con el nombre de un global de JavaScript',
   expect(archivos['enums.ts']).not.toMatch(/export (const|type) Set\b/);
   expect(() => generar(conSet, {}, { Set: 'Map' })).toThrow(/Map.*global/);
   expect(() => generar(conSet, {}, { Set: 'SetDePruebas', Otro: 'Otro' })).toThrow(/Otro/);
+});
+
+test('resources.ts: un método por operación, con el summary, el operationId y el @see a la referencia', () => {
+  const contrato = contratoArmado({
+    'x-sdk-group': 'x.v1',
+    'x-sdk-name': 'detalle_folios.todos',
+    parameters: [
+      ...contratoArmado({}).paths['/v1/x/{rut}'].post.parameters,
+      { in: 'header', name: 'X-Consultar-Sii', schema: { type: 'string' } },
+      { in: 'query', name: 'formato', schema: { type: 'string' } },
+    ],
+  });
+  const archivos = generar(contrato, { x_v1_op: { queryFija: { formato: 'json' }, quitarDeQuery: ['formato'], motivo: 'prueba' } });
+  const recursos = archivos['resources.ts']!;
+  expect(recursos.startsWith('// Generado por scripts/generate.mjs')).toBe(true);
+  expect(recursos).toContain('    detalleFoliosTodos(');
+  expect(recursos).toContain('Operación de prueba.');
+  expect(recursos).toContain('Operación `x_v1_op` del contrato.');
+  expect(recursos).toContain('@see https://developers.enrolamiento.cl/docs/referencia/');
+  expect(recursos).toContain("x_v1_op: ParamsDelContrato<'x_v1_op', { 'X-Consultar-Sii': 'consultarSii' }, 'formato'>;");
+  expect(recursos).toContain(
+    "detalleFoliosTodos: (params, opciones) =>\n          nucleo.pedir(OPERACIONES['x_v1_op'], params ?? {}, opciones),",
+  );
+  // `rut` es de ruta: el método exige el objeto de parámetros.
+  expect(recursos).toContain("      params: ParamsDe<'x_v1_op'>,");
+});
+
+test('resources.ts: params es opcional si la operación no tiene nada obligatorio', () => {
+  const sinRuta = contratoArmado({ parameters: [{ in: 'query', name: 'ambiente', schema: { $ref: '#/components/schemas/Ambiente' } }] });
+  const texto = JSON.stringify(sinRuta).replaceAll('/v1/x/{rut}', '/v1/x');
+  const recursos = generar(JSON.parse(texto), {})['resources.ts']!;
+  expect(recursos).toContain("    params?: ParamsDe<'x_v1_op'>,");
+
+  const conCuerpoObligatorio = JSON.parse(texto);
+  conCuerpoObligatorio.paths['/v1/x'].post.requestBody = {
+    required: true,
+    content: { 'application/json': { schema: { type: 'object', required: ['Data'], properties: { Data: { type: 'string' } } } } },
+  };
+  expect(generar(conCuerpoObligatorio, {})['resources.ts']).toContain("    params: ParamsDe<'x_v1_op'>,");
+});
+
+test('falla sin x-sdk-group, x-sdk-name o summary, o si dos métodos quedan en el mismo lugar', () => {
+  expect(() => generar(contratoArmado({ 'x-sdk-group': undefined }), {})).toThrow(/x_v1_op.*x-sdk-group/);
+  expect(() => generar(contratoArmado({ 'x-sdk-name': 'no-vale' }), {})).toThrow(/x_v1_op.*x-sdk-name/);
+  expect(() => generar(contratoArmado({ summary: undefined }), {})).toThrow(/x_v1_op.*summary/);
+
+  const dos = contratoArmado({ 'x-sdk-name': 'detalle_folios' });
+  (dos.paths as any)['/v1/y/{rut}'] = {
+    post: { ...dos.paths['/v1/x/{rut}'].post, operationId: 'x_v1_otra', 'x-sdk-name': 'detalle.folios' },
+  };
+  expect(() => generar(dos, {})).toThrow(/x_v1_otra.*x\.detalleFolios.*x_v1_op/);
+
+  const grupoYMetodo = contratoArmado({ 'x-sdk-name': 'v1' });
+  (grupoYMetodo.paths as any)['/v1/y/{rut}'] = {
+    post: { ...grupoYMetodo.paths['/v1/x/{rut}'].post, operationId: 'x_v1_otra', 'x-sdk-group': 'x.v1', 'x-sdk-name': 'op' },
+  };
+  expect(() => generar(grupoYMetodo, {})).toThrow(/x\.v1/);
 });

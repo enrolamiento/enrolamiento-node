@@ -1,0 +1,18 @@
+export { default } from './client.js';
+export {
+  EnrolamientoError,
+  ErrorDeApi,
+  ErrorDeAutenticacion,
+  ErrorDeConexion,
+  ErrorDeConfiguracion,
+  ErrorDeFramework,
+  ErrorDeLimite,
+  ErrorDeNegocio,
+  ErrorDeTiempoAgotado,
+} from './errors.js';
+export type { DatosDeErrorDeApi, Reintentable } from './errors.js';
+export * from './generated/enums.js';
+export { VERSION_DEL_CONTRATO } from './generated/operations.js';
+export type { DatosYRespuesta, OpcionesDeCliente, OpcionesDePedido, PromesaDeApi } from './request.js';
+export type { ParamsDe, RespuestaDe } from './types.js';
+export { VERSION } from './version.js';

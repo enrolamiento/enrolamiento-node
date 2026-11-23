@@ -2,6 +2,7 @@
 // - operations.ts: lo que el SDK necesita saber de cada operación (tipo `Operacion`).
 // - enums.ts: un objeto `as const` y su tipo por cada esquema con `x-enum-varnames`.
 // - schema.ts: los tipos de esquemas y operaciones, con openapi-typescript (solo tipos).
+// - resources.ts: un método por operación, agrupados por x-sdk-group, y los parámetros de cada uno.
 //
 // Uso: node scripts/generate.mjs [--out <directorio>]
 // Sin --out escribe en src/generated. La salida es determinista: el mismo
@@ -20,6 +21,7 @@ const ENCABEZADO =
   '// Generado por scripts/generate.mjs desde contract/openapi.json. No editar a mano: correr `npm run generate`.\n';
 
 const METODOS = ['get', 'post', 'put', 'delete'];
+const REFERENCIA = 'https://developers.enrolamiento.cl/docs/referencia/';
 const IDENTIFICADOR = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 /** Globales de JavaScript que un enum exportado taparía en el módulo que lo importe por nombre. */
 const GLOBALES = new Set([
@@ -37,8 +39,8 @@ const GLOBALES = new Set([
 ]);
 
 /**
- * Genera `operations.ts` y `enums.ts` desde el contrato. Lanza un `Error` que lista todo lo que el contrato
- * tiene y el generador no sabe traducir, con la operación de cada problema.
+ * Genera `operations.ts`, `enums.ts` y `resources.ts` desde el contrato. Lanza un `Error` que lista todo lo que el
+ * contrato tiene y el generador no sabe traducir, con la operación de cada problema.
  * @param {any} contrato el contrato OpenAPI ya parseado
  * @param {Readonly<Record<string, Override>>} overrides
  * @param {Readonly<Record<string, string>>} [nombresDeEnum] nombre de exportación de un enum, por nombre de esquema
@@ -53,12 +55,14 @@ export function generar(contrato, overrides, nombresDeEnum = {}) {
     if (!ids.has(id)) errores.push(`${id}: el override nombra una operación que no existe en el contrato (o es un alias)`);
   }
   const enums = leerEnums(contrato, nombresDeEnum, errores);
+  const arbol = armarArbol(operaciones, errores);
   if (errores.length > 0) {
     throw new Error(`El contrato no se puede generar:\n- ${errores.join('\n- ')}`);
   }
   return {
     'operations.ts': escribirOperaciones(String(contrato.info?.version), operaciones),
     'enums.ts': escribirEnums(enums),
+    'resources.ts': escribirRecursos(operaciones, arbol),
   };
 }
 
@@ -118,6 +122,16 @@ function resolver(contrato, valor, contexto, errores) {
  * @property {boolean} ambienteObligatorio
  * @property {Readonly<Record<string, string>>} queryFija
  * @property {{ automatico: string[], manual: string[], nunca: string[] }} reintentable
+ * @property {MetodoLeido} sdk lo que hace falta para el método del cliente; no va a `operations.ts`
+ */
+
+/**
+ * @typedef {object} MetodoLeido
+ * @property {string[]} grupo `x-sdk-group` partido en sus puntos: `['certificaciones', 'v1']`
+ * @property {string} nombre `x-sdk-name` en camelCase, sin puntos: `anulacionMasivaAnular`
+ * @property {string} resumen el `summary` del contrato
+ * @property {string[]} quitadosDeQuery los parámetros de query que el override no ofrece
+ * @property {boolean} conObligatorios si la operación tiene algún parámetro obligatorio (fuera de `ambiente`)
  */
 
 /**
@@ -212,8 +226,9 @@ function leerOperacion(contrato, id, metodo, ruta, item, op, override, errores) 
   const enCabecera = leerCabeceras(id, cabeceras, [...deRuta, ...deQuery, ...delCuerpo], errores);
 
   const reintentable = leerReintentable(id, op['x-reintentable'], errores);
+  const sdk = leerMetodo(contrato, id, op, [...parametros.values()], quitar, errores);
 
-  if (errores.length > cantidadDeErrores || !reintentable) return undefined;
+  if (errores.length > cantidadDeErrores || !reintentable || !sdk) return undefined;
   return {
     id,
     metodo,
@@ -227,7 +242,106 @@ function leerOperacion(contrato, id, metodo, ruta, item, op, override, errores) 
     ambienteObligatorio,
     queryFija: override?.queryFija ?? {},
     reintentable,
+    sdk,
   };
+}
+
+/**
+ * Dónde queda el método en el cliente (`x-sdk-group` y `x-sdk-name`), su JSDoc y si exige parámetros.
+ * Obligatorio es todo parámetro de ruta, todo parámetro de query o de cabecera con `required: true` y el
+ * cuerpo con `required: true` si su esquema tiene propiedades obligatorias. `ambiente` nunca lo es: el núcleo
+ * lo exige donde hace falta y puede venir de las opciones del cliente.
+ * @param {any} contrato
+ * @param {string} id
+ * @param {any} op
+ * @param {any[]} parametros ya resueltos
+ * @param {readonly string[]} quitados de la query por el override
+ * @param {string[]} errores
+ * @returns {MetodoLeido | undefined}
+ */
+function leerMetodo(contrato, id, op, parametros, quitados, errores) {
+  const cantidadDeErrores = errores.length;
+  const grupoCrudo = op['x-sdk-group'];
+  const grupo = typeof grupoCrudo === 'string' ? grupoCrudo.split('.') : [];
+  if (grupo.length === 0 || !grupo.every((parte) => IDENTIFICADOR.test(parte))) {
+    errores.push(`${id}: x-sdk-group ${JSON.stringify(grupoCrudo)} no da un grupo válido en el SDK`);
+  }
+  const nombreCrudo = op['x-sdk-name'];
+  const nombre =
+    typeof nombreCrudo === 'string'
+      ? nombreCrudo
+          .split(/[._]/)
+          .map((parte, i) => (i === 0 ? parte : parte.charAt(0).toUpperCase() + parte.slice(1)))
+          .join('')
+      : '';
+  if (!IDENTIFICADOR.test(nombre)) {
+    errores.push(`${id}: x-sdk-name ${JSON.stringify(nombreCrudo)} no da un nombre de método válido en el SDK`);
+  }
+  const resumen = typeof op.summary === 'string' ? op.summary.trim() : '';
+  if (resumen === '') errores.push(`${id}: falta el summary, que es la documentación del método`);
+
+  const parametroObligatorio = parametros.some(
+    (p) =>
+      p.name !== 'ambiente' &&
+      !quitados.includes(p.name) &&
+      (p.in === 'path' || ((p.in === 'query' || p.in === 'header') && p.required === true)),
+  );
+  const cuerpo = op.requestBody === undefined ? undefined : resolver(contrato, op.requestBody, id, []);
+  const esquema = resolver(contrato, cuerpo?.content?.['application/json']?.schema, id, []);
+  const cuerpoObligatorio =
+    cuerpo?.required === true && Array.isArray(esquema?.required) && esquema.required.length > 0;
+
+  if (errores.length > cantidadDeErrores) return undefined;
+  return {
+    grupo,
+    nombre,
+    resumen,
+    quitadosDeQuery: [...quitados],
+    conObligatorios: parametroObligatorio || cuerpoObligatorio,
+  };
+}
+
+/**
+ * @typedef {object} Grupo
+ * @property {Map<string, Grupo>} grupos
+ * @property {Map<string, OperacionLeida>} metodos
+ */
+
+/**
+ * Los grupos del cliente con sus métodos. Anota un error si dos operaciones dan el mismo método, o si un método
+ * se llama como un grupo del mismo nivel.
+ * @param {OperacionLeida[]} operaciones
+ * @param {string[]} errores
+ * @returns {Grupo}
+ */
+function armarArbol(operaciones, errores) {
+  /** @type {Grupo} */
+  const raiz = { grupos: new Map(), metodos: new Map() };
+  for (const op of operaciones) {
+    let grupo = raiz;
+    for (const parte of op.sdk.grupo) {
+      let hijo = grupo.grupos.get(parte);
+      if (!hijo) {
+        hijo = { grupos: new Map(), metodos: new Map() };
+        grupo.grupos.set(parte, hijo);
+      }
+      grupo = hijo;
+    }
+    const camino = [...op.sdk.grupo, op.sdk.nombre].join('.');
+    const otra = grupo.metodos.get(op.sdk.nombre);
+    if (otra) errores.push(`${op.id}: el método ${camino} ya es de ${otra.id}`);
+    else grupo.metodos.set(op.sdk.nombre, op);
+  }
+  /** @param {Grupo} grupo @param {string[]} prefijo */
+  const revisar = (grupo, prefijo) => {
+    for (const [nombre, hijo] of grupo.grupos) {
+      const metodo = grupo.metodos.get(nombre);
+      if (metodo) errores.push(`${metodo.id}: el método ${[...prefijo, nombre].join('.')} se llama como un grupo`);
+      revisar(hijo, [...prefijo, nombre]);
+    }
+  };
+  revisar(raiz, []);
+  return raiz;
 }
 
 /**
@@ -410,9 +524,113 @@ function escribirOperaciones(version, operaciones) {
     '/** Una entrada por operación del contrato, por `operationId`. Los alias (`x-alias-de`) no están. */',
     'export const OPERACIONES: { readonly [id: string]: Operacion } = {',
   ];
-  for (const op of operaciones) lineas.push(`  ${clave(op.id)}: ${literal(op, '  ')},`);
+  for (const { sdk, ...op } of operaciones) lineas.push(`  ${clave(op.id)}: ${literal(op, '  ')},`);
   lineas.push('};', '');
   return lineas.join('\n');
+}
+
+/**
+ * `resources.ts`: los parámetros de cada operación (`ParamsDeOperacion`), la forma del cliente (`Recursos`, con la
+ * documentación de cada método) y `recursos(nucleo)`, que la arma.
+ * @param {OperacionLeida[]} operaciones
+ * @param {Grupo} arbol
+ */
+function escribirRecursos(operaciones, arbol) {
+  const lineas = [
+    ENCABEZADO,
+    "import type { Nucleo, OpcionesDePedido, PromesaDeApi } from '../request.js';",
+    "import type { ParamsDe, ParamsDelContrato, RespuestaDe } from '../types.js';",
+    "import { OPERACIONES } from './operations.js';",
+    '',
+    '/**',
+    ' * Los parámetros de cada método, por `operationId`: ruta, query, cabeceras (por su nombre en el SDK) y las',
+    ' * propiedades del cuerpo, en un solo objeto. Se leen con `ParamsDe<Id>`.',
+    ' */',
+    'export interface ParamsDeOperacion {',
+  ];
+  for (const op of operaciones) {
+    const argumentos = [cadena(op.id)];
+    const cabeceras = Object.entries(op.enCabecera).map(([sdk, http]) => `${cadena(http)}: ${cadena(sdk)}`);
+    const quitados = op.sdk.quitadosDeQuery.map(cadena).join(' | ');
+    // Los argumentos opcionales van en orden: si hay quitados, las cabeceras se escriben aunque sean `{}`.
+    if (cabeceras.length > 0 || quitados !== '') {
+      argumentos.push(cabeceras.length > 0 ? `{ ${cabeceras.join(', ')} }` : '{}');
+    }
+    if (quitados !== '') argumentos.push(quitados);
+    lineas.push(`  ${clave(op.id)}: ParamsDelContrato<${argumentos.join(', ')}>;`);
+  }
+  lineas.push('}', '');
+
+  lineas.push(
+    '/** Los grupos de métodos del cliente, uno por `x-sdk-group` del contrato. */',
+    'export interface Recursos {',
+  );
+  escribirFormaDeGrupo(arbol, '  ', lineas);
+  lineas.push('}', '');
+
+  lineas.push(
+    '/** Arma los grupos de métodos del cliente sobre `nucleo`. */',
+    'export function recursos(nucleo: Nucleo): Recursos {',
+    '  return {',
+  );
+  escribirGrupo(arbol, '    ', lineas);
+  lineas.push('  };', '}', '');
+  return lineas.join('\n');
+}
+
+/**
+ * Los miembros de un grupo en la interfaz `Recursos`: sus subgrupos (de solo lectura) y sus métodos con su JSDoc.
+ * @param {Grupo} grupo
+ * @param {string} sangria
+ * @param {string[]} lineas
+ */
+function escribirFormaDeGrupo(grupo, sangria, lineas) {
+  for (const [nombre, hijo] of ordenadas(grupo.grupos)) {
+    lineas.push(`${sangria}readonly ${clave(nombre)}: {`);
+    escribirFormaDeGrupo(hijo, `${sangria}  `, lineas);
+    lineas.push(`${sangria}};`);
+  }
+  for (const [nombre, op] of ordenadas(grupo.metodos)) {
+    const id = cadena(op.id);
+    lineas.push(
+      comentario(`${op.sdk.resumen}\n\nOperación \`${op.id}\` del contrato.\n\n@see ${REFERENCIA}`, sangria),
+      `${sangria}${clave(nombre)}(`,
+      `${sangria}  params${op.sdk.conObligatorios ? '' : '?'}: ParamsDe<${id}>,`,
+      `${sangria}  opciones?: OpcionesDePedido,`,
+      `${sangria}): PromesaDeApi<RespuestaDe<${id}>>;`,
+    );
+  }
+}
+
+/**
+ * Los miembros de un grupo en el objeto que devuelve `recursos(nucleo)`.
+ * @param {Grupo} grupo
+ * @param {string} sangria
+ * @param {string[]} lineas
+ */
+function escribirGrupo(grupo, sangria, lineas) {
+  for (const [nombre, hijo] of ordenadas(grupo.grupos)) {
+    lineas.push(`${sangria}${clave(nombre)}: {`);
+    escribirGrupo(hijo, `${sangria}  `, lineas);
+    lineas.push(`${sangria}},`);
+  }
+  for (const [nombre, op] of ordenadas(grupo.metodos)) {
+    // `?? {}`: quien llama desde JavaScript sin argumentos recibe el ErrorDeConfiguracion del núcleo.
+    lineas.push(
+      `${sangria}${clave(nombre)}: (params, opciones) =>`,
+      `${sangria}  nucleo.pedir(OPERACIONES[${cadena(op.id)}], params ?? {}, opciones),`,
+    );
+  }
+}
+
+/**
+ * Las entradas de un mapa ordenadas por clave, para que la salida no dependa del orden del contrato.
+ * @template T
+ * @param {Map<string, T>} mapa
+ * @returns {[string, T][]}
+ */
+function ordenadas(mapa) {
+  return [...mapa].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
 /** @param {EnumLeido[]} enums */
