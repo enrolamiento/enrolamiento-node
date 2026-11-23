@@ -118,12 +118,16 @@ describe('webhooks.verificar', () => {
     expect(verificar(CUERPO, deNode)).toEqual(CERTIFICACION);
   });
 
-  test('acepta el cuerpo como string y como Uint8Array', () => {
+  test('acepta el cuerpo como string, Uint8Array y ArrayBuffer', () => {
     const conAcentos = JSON.stringify({ ...CERTIFICACION, rut: '77777777-7', resolucion: { numero: 1, fecha: 'año' } });
     const cabeceras = cabecerasDe(conAcentos);
     expect(verificar(conAcentos, cabeceras)).toEqual(JSON.parse(conAcentos));
     expect(verificar(new TextEncoder().encode(conAcentos), cabeceras)).toEqual(JSON.parse(conAcentos));
     expect(verificar(Buffer.from(conAcentos, 'utf8'), cabeceras)).toEqual(JSON.parse(conAcentos));
+    // Lo que da `await request.arrayBuffer()` en un handler estilo fetch.
+    const arrayBuffer = new TextEncoder().encode(conAcentos).buffer;
+    expect(arrayBuffer).toBeInstanceOf(ArrayBuffer);
+    expect(verificar(arrayBuffer, cabeceras)).toEqual(JSON.parse(conAcentos));
   });
 
   test('un cuerpo que es un objeto ya parseado lanza ErrorDeFirma que pide el cuerpo crudo', () => {
@@ -132,6 +136,7 @@ describe('webhooks.verificar', () => {
     expect(e).toBeInstanceOf(EnrolamientoError);
     expect(e.message).toMatch(/cuerpo crudo/);
     expect(e.message).toMatch(/bytes exactos/);
+    expect(e.message).toMatch(/ArrayBuffer/);
   });
 
   test('cuerpo cambiado, otro secreto, firma de otro largo, fecha ilegible: ErrorDeFirma', () => {
@@ -154,6 +159,15 @@ describe('webhooks.verificar', () => {
       expect(() => verificar(CUERPO, { ...cabeceras, 'X-Enrolamiento-Firma': otroLargo })).toThrow(ErrorDeFirma);
     }
 
+    // Del largo correcto, pero en mayúsculas o con caracteres que no son hexadecimales: ErrorDeFirma y nada más.
+    const hex = firma.slice('sha256='.length);
+    expect(hex).toMatch(/[a-f]/);
+    for (const malFormada of [`sha256=${hex.toUpperCase()}`, `sha256=${'z'.repeat(64)}`, `sha256=${'ñ'.repeat(64)}`]) {
+      expect(errorDe(() => verificar(CUERPO, { ...cabeceras, 'X-Enrolamiento-Firma': malFormada }))).toBeInstanceOf(
+        ErrorDeFirma,
+      );
+    }
+
     // La fecha forma parte de lo firmado: cambiarla invalida la firma.
     expect(() =>
       verificar(CUERPO, { ...cabeceras, 'X-Enrolamiento-Fecha': '2026-11-23T10:15:31-03:00' }),
@@ -167,21 +181,38 @@ describe('webhooks.verificar', () => {
     }
   });
 
+  test('la fecha que manda el remitente entra al mensaje acotada: sin saltos de línea y a lo más 40 caracteres', () => {
+    const larga = `${'1'.repeat(20)}\r\n${'2'.repeat(478)}`;
+    expect(larga).toHaveLength(500);
+    const e = errorDe(() => verificar(CUERPO, cabecerasDe(CUERPO, SECRETO, larga)));
+    expect(e).toBeInstanceOf(ErrorDeFirma);
+    expect(e.message).not.toMatch(/[\r\n]/);
+    const citada = /"([^"]*)"/.exec(e.message)?.[1];
+    expect(citada).toBe(`${'1'.repeat(20)}${'2'.repeat(20)}`);
+  });
+
   test('ningún mensaje de error contiene el secreto ni el cuerpo', () => {
     const cabeceras = cabecerasDe(CUERPO);
-    const casos = [
-      () => verificar(CUERPO.replace('80', '81'), cabeceras),
-      () => verificar(CERTIFICACION, cabeceras),
-      () => verificar(CUERPO, { ...cabeceras, 'X-Enrolamiento-Firma': 'sha256=00' }),
-      () => verificar('no es json', cabecerasDe('no es json')),
-      () => webhooks.verificar(CUERPO, cabeceras, SECRETO, { ahora: AHORA + 3_600_000 }),
+    const { 'X-Enrolamiento-Firma': firma } = cabeceras;
+    const cambiado = CUERPO.replace('80', '81');
+    const casos: [cuerpo: string, () => unknown][] = [
+      [cambiado, () => verificar(cambiado, cabeceras)],
+      [CUERPO, () => verificar(CERTIFICACION, cabeceras)],
+      [CUERPO, () => verificar(CUERPO, { ...cabeceras, 'X-Enrolamiento-Firma': 'sha256=00' })],
+      ['no es json', () => verificar('no es json', cabecerasDe('no es json'))],
+      [CUERPO, () => webhooks.verificar(CUERPO, cabeceras, SECRETO, { ahora: AHORA + 3_600_000 })],
+      [CUERPO, () => verificar(CUERPO, cabecerasDe(CUERPO, SECRETO, 'ayer'))],
+      [CUERPO, () => verificar(CUERPO, { 'X-Enrolamiento-Firma': firma })],
+      [CUERPO, () => verificar(CUERPO, { ...cabeceras, 'X-Enrolamiento-Firma': undefined })],
     ];
-    for (const caso of casos) {
+    for (const [cuerpo, caso] of casos) {
       const e = errorDe(caso);
       expect(e).toBeInstanceOf(ErrorDeFirma);
-      expect(e.message).not.toContain(SECRETO);
-      expect(e.message).not.toContain(CERTIFICACION.rut);
-      expect(String(e)).not.toContain(SECRETO);
+      for (const texto of [e.message, String(e)]) {
+        expect(texto).not.toContain(SECRETO);
+        expect(texto).not.toContain(cuerpo);
+        expect(texto).not.toContain(CERTIFICACION.rut);
+      }
     }
   });
 
@@ -204,6 +235,26 @@ describe('webhooks.verificar', () => {
     expect(webhooks.verificar(CUERPO, cabeceras, SECRETO, { ahora: AHORA + 600_000, toleranciaMs: 900_000 })).toEqual(
       CERTIFICACION,
     );
+
+    // Con las opciones por omisión y el reloj real, una entrega de hace una hora se rechaza.
+    const haceUnaHora = new Date(Date.now() - 3_600_000).toISOString();
+    expect(() => webhooks.verificar(CUERPO, cabecerasDe(CUERPO, SECRETO, haceUnaHora), SECRETO)).toThrow(/reloj/);
+  });
+
+  test('una tolerancia o un reloj que no es un número finito: ErrorDeConfiguracion, no una ventana abierta', () => {
+    // Por ejemplo `toleranciaMs: Number(process.env.TOLERANCIA)` con la variable sin definir.
+    const viejas = cabecerasDe(CUERPO, SECRETO, '2020-01-01T00:00:00-03:00');
+    for (const opciones of [
+      { toleranciaMs: Number.NaN },
+      { toleranciaMs: -1 },
+      { toleranciaMs: Number.POSITIVE_INFINITY },
+      { ahora: Number.NaN },
+      { ahora: Number.POSITIVE_INFINITY },
+    ]) {
+      const e = errorDe(() => webhooks.verificar(CUERPO, viejas, SECRETO, opciones));
+      expect(e, JSON.stringify(opciones)).toBeInstanceOf(ErrorDeConfiguracion);
+    }
+    expect(webhooks.verificar(CUERPO, cabecerasDe(CUERPO), SECRETO, { ahora: AHORA, toleranciaMs: 0 })).toEqual(CERTIFICACION);
   });
 
   test('sin secreto en el argumento ni en el entorno: ErrorDeConfiguracion', () => {
@@ -225,6 +276,7 @@ describe('webhooks.verificar', () => {
     expect(sinFirma.message).toMatch(/X-Enrolamiento-Firma/);
 
     const vacia = errorDe(() => verificar(CUERPO, { 'X-Enrolamiento-Fecha': fecha, 'X-Enrolamiento-Firma': [] }));
+    expect(vacia).toBeInstanceOf(ErrorDeFirma);
     expect(vacia.message).toMatch(/X-Enrolamiento-Firma/);
   });
 
@@ -245,6 +297,16 @@ describe('webhooks.verificar', () => {
     const evento = verificar(cuerpo, cabecerasDe(cuerpo));
     expect(evento).toEqual(nuevo);
     expect(evento.evento).toBe('folios.agotados');
+  });
+
+  test('un respaldo sin la clave `codigo` verifica y se devuelve tal cual', () => {
+    const { codigo: _codigo, ...sinCodigo } = CERTIFICACION.respaldo!;
+    const evento = { evento: 'respaldo.finalizado', id: '4e5f', fecha: FECHA, rut: '77777777-7', respaldo: sinCodigo };
+    const cuerpo = JSON.stringify(evento);
+    expect(cuerpo).not.toContain('codigo');
+    const recibido = verificar(cuerpo, cabecerasDe(cuerpo));
+    expect(recibido).toEqual(evento);
+    expect(recibido.evento === 'respaldo.finalizado' && 'codigo' in recibido.respaldo).toBe(false);
   });
 
   test('prueba y respaldo.finalizado se devuelven tal cual', () => {

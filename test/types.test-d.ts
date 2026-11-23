@@ -129,3 +129,16 @@ test('el evento de un webhook se discrimina por `evento` sin conversiones', () =
     void e.rut;
   }
 });
+
+test('`respaldo.codigo` es opcional y nullable (los ejemplos de la guía lo omiten)', () => {
+  expectTypeOf<Respaldo['codigo']>().toEqualTypeOf<string | null | undefined>();
+  expectTypeOf<{
+    estado: 'listo';
+    url: null;
+    documentos: { emitidos: null; recibidos: null; faltantes: null };
+    completo_hasta: null;
+    bytes: null;
+    catalogo: null;
+    disponible_hasta: null;
+  }>().toExtend<Respaldo>();
+});

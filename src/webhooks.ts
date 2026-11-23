@@ -6,7 +6,8 @@ import { ErrorDeConfiguracion, ErrorDeFirma } from './errors.js';
 /** El bloque `respaldo` de un evento: el estado del respaldo de documentos de la empresa. */
 export interface Respaldo {
   estado: 'listo' | 'fallido' | 'vencido' | 'en_proceso';
-  codigo: string | null;
+  /** La guía dice que viene siempre, con `null` explícito, pero sus propios ejemplos `listo` y `en_proceso` lo omiten. */
+  codigo?: string | null;
   url: string | null;
   documentos: { emitidos: number | null; recibidos: number | null; faltantes: number | null };
   completo_hasta: string | null;
@@ -106,8 +107,10 @@ function exigirCabecera(cabeceras: CabecerasDeWebhook, nombre: string): string {
 function bytesDelCuerpo(cuerpoCrudo: unknown): Uint8Array {
   if (typeof cuerpoCrudo === 'string') return Buffer.from(cuerpoCrudo, 'utf8');
   if (cuerpoCrudo instanceof Uint8Array) return cuerpoCrudo;
+  if (cuerpoCrudo instanceof ArrayBuffer) return new Uint8Array(cuerpoCrudo);
   throw new ErrorDeFirma(
-    'Se necesita el cuerpo crudo de la entrega, como string o Buffer, tal como llegó: la firma cubre sus bytes exactos, ' +
+    'Se necesita el cuerpo crudo de la entrega, como string, Buffer, Uint8Array o ArrayBuffer, tal como llegó: ' +
+      'la firma cubre sus bytes exactos, ' +
       'y un objeto ya parseado no se puede volver a serializar igual (espacios, orden de las claves, escapes). ' +
       'En Express, por ejemplo, lea esa ruta con express.raw({ type: "application/json" }).',
   );
@@ -120,16 +123,35 @@ function compararFirma(recibida: string, esperada: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-function comprobarFecha(fecha: string, opciones: OpcionesDeVerificacion): void {
+/** La ventana contra entregas repetidas. Un valor no finito la abriría sin límite, así que se rechaza. */
+function resolverVentana(opciones: OpcionesDeVerificacion): { tolerancia: number; ahora: number } {
+  const tolerancia = opciones.toleranciaMs ?? TOLERANCIA_MS;
+  if (!Number.isFinite(tolerancia) || tolerancia < 0) {
+    throw new ErrorDeConfiguracion('`toleranciaMs` debe ser un número finito de milisegundos, mayor o igual a 0.');
+  }
+  const ahora = opciones.ahora ?? Date.now();
+  if (!Number.isFinite(ahora)) {
+    throw new ErrorDeConfiguracion('`ahora` debe ser un número finito de milisegundos desde 1970.');
+  }
+  return { tolerancia, ahora };
+}
+
+/** Un valor que controla el remitente, acotado para un mensaje de error: sin saltos de línea y a lo más 40 caracteres. */
+function paraMensaje(valor: string): string {
+  return valor.replace(/[\r\n]/g, '').slice(0, 40);
+}
+
+function comprobarFecha(fecha: string, ventana: { tolerancia: number; ahora: number }): void {
   const instante = FORMATO_FECHA.test(fecha) ? Date.parse(fecha) : Number.NaN;
   if (Number.isNaN(instante)) {
-    throw new ErrorDeFirma(`La cabecera ${CABECERA_FECHA} no es una fecha legible: "${fecha}".`);
+    throw new ErrorDeFirma(`La cabecera ${CABECERA_FECHA} no es una fecha legible: "${paraMensaje(fecha)}".`);
   }
-  const tolerancia = opciones.toleranciaMs ?? TOLERANCIA_MS;
-  const diferencia = Math.abs((opciones.ahora ?? Date.now()) - instante);
-  if (diferencia > tolerancia) {
+  const { tolerancia } = ventana;
+  const diferencia = Math.abs(ventana.ahora - instante);
+  // Escrito para fallar cerrado: cualquier NaN que se cuele rechaza la entrega.
+  if (!(diferencia <= tolerancia)) {
     throw new ErrorDeFirma(
-      `La cabecera ${CABECERA_FECHA} (${fecha}) difiere ${Math.round(diferencia / 1000)} s del reloj de este servidor; ` +
+      `La cabecera ${CABECERA_FECHA} (${paraMensaje(fecha)}) difiere ${Math.round(diferencia / 1000)} s del reloj de este servidor; ` +
         `la tolerancia es de ${Math.round(tolerancia / 1000)} s. Si la entrega es reciente, revise que el reloj esté ` +
         'sincronizado (NTP); si no, puede ser una entrega repetida.',
     );
@@ -159,16 +181,17 @@ export const webhooks = {
    * cambios, aunque su `evento` no figure en `EventoDeWebhook`: deje siempre una rama `default` para un `evento`
    * que no reconozca (respóndale con un 2xx e ignórelo), y no la use para afirmar que no puede ocurrir.
    *
-   * @param cuerpoCrudo El cuerpo tal como llegó, sin parsear.
+   * @param cuerpoCrudo El cuerpo tal como llegó, sin parsear (en un handler estilo fetch, `await request.arrayBuffer()`).
    * @param secreto Por omisión, `ENROLAMIENTO_WEBHOOK_SECRETO`.
    */
   verificar(
-    cuerpoCrudo: string | Uint8Array,
+    cuerpoCrudo: string | Uint8Array | ArrayBuffer,
     cabeceras: CabecerasDeWebhook,
     secreto?: string,
     opciones: OpcionesDeVerificacion = {},
   ): EventoDeWebhook {
     const clave = resolverSecreto(secreto);
+    const ventana = resolverVentana(opciones);
     const bytes = bytesDelCuerpo(cuerpoCrudo);
     const fecha = exigirCabecera(cabeceras, CABECERA_FECHA);
     const firma = exigirCabecera(cabeceras, CABECERA_FIRMA);
@@ -178,7 +201,7 @@ export const webhooks = {
           'revise el secreto y que el cuerpo sea el crudo, sin modificar.',
       );
     }
-    comprobarFecha(fecha, opciones);
+    comprobarFecha(fecha, ventana);
     return leerEvento(bytes);
   },
 
