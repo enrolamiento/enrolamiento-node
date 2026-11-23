@@ -1,5 +1,5 @@
-// Pruebas de tipos: las corre `vitest` con typecheck (npm test) y también `npm run typecheck`.
-// Ninguna llamada de este archivo se ejecuta.
+// Pruebas de tipos: las corre `npm run typecheck` (tsc sobre tsconfig.test.json); `npm test` no las toma.
+// Cada `expectTypeOf` y cada `@ts-expect-error` que no se cumple es un error de tsc. Nada de este archivo se ejecuta.
 import { expectTypeOf, test } from 'vitest';
 import Enrolamiento, {
   Ambiente,
@@ -9,6 +9,8 @@ import Enrolamiento, {
   type PromesaDeApi,
   type RespuestaDe,
 } from '../src/index.js';
+import type { components } from '../src/generated/schema.js';
+import type { IdDeOperacion } from '../src/types.js';
 
 const cliente = new Enrolamiento();
 const rut = '11111111-1';
@@ -71,11 +73,37 @@ test('ambiente es opcional en toda operación que lo recibe, también en la ruta
   expectTypeOf<ParamsDe<'caf_v1_reobtener'>['ambiente']>().toEqualTypeOf<Ambiente | undefined>();
 });
 
-test('el cuerpo obligatorio exige sus propiedades obligatorias; el opcional las deja opcionales', () => {
+test('el cuerpo obligatorio exige sus propiedades obligatorias, y su tipo es el del esquema', () => {
   expectTypeOf(cliente.portabilidad.sesiones).toBeCallableWith({ rut });
   // @ts-expect-error el cuerpo de sesiones es obligatorio y `rut` también
   expectTypeOf(cliente.portabilidad.sesiones).toBeCallableWith({});
-  expectTypeOf<ParamsDe<'caf_v1_descargar'>['Data']>().toEqualTypeOf<string | undefined>();
+  expectTypeOf<ParamsDe<'portabilidad_v1_sesiones'>>().toEqualTypeOf<components['schemas']['NuevaSesionDePortabilidad']>();
+});
+
+test('el cuerpo opcional va entero o no va', () => {
+  // Sin cuerpo.
+  void cliente.caf.descargar({ rut, tipoDocumento: 33, cantidad: 1 });
+  void cliente.certificaciones.v1.crear({ rut });
+  // Con el cuerpo completo.
+  void cliente.caf.descargar({ rut, tipoDocumento: 33, cantidad: 1, Data: 'MIIC', Contrasenna: 'secreta' });
+  void cliente.certificaciones.v1.crear({ rut, CertData: 'MIIC', Contrasenna: 'secreta', TodosSets: true });
+  // @ts-expect-error con `Data` el cuerpo va entero: falta `Contrasenna`
+  void cliente.caf.descargar({ rut, tipoDocumento: 33, cantidad: 1, Data: 'MIIC' });
+  // @ts-expect-error con `Contrasenna` el cuerpo va entero: falta `CertData`
+  void cliente.certificaciones.v1.crear({ rut, Contrasenna: 'x' });
+  // @ts-expect-error una propiedad opcional del cuerpo también lo trae entero
+  void cliente.certificaciones.v1.crear({ rut, TodosSets: true });
+  // Un cuerpo sin propiedades obligatorias se manda en parte.
+  void cliente.certificaciones.v1.actualizar({ rut, Giro: 'Comercio' });
+});
+
+test('ningún ParamsDe es never ni any', () => {
+  type EsAny<T> = 0 extends 1 & T ? true : false;
+  type Malos = {
+    [Id in IdDeOperacion]: EsAny<ParamsDe<Id>> extends true ? Id : [ParamsDe<Id>] extends [never] ? Id : never;
+  }[IdDeOperacion];
+  expectTypeOf<Malos>().toEqualTypeOf<never>();
+  expectTypeOf<IdDeOperacion>().not.toBeNever();
 });
 
 test('los parámetros de query obligatorios se exigen', () => {

@@ -26,34 +26,40 @@ export type RespuestaDe<Id extends IdDeOperacion> = operations[Id]['responses'] 
  * - `Cabeceras`: el nombre en el SDK de cada parámetro de cabecera (`{ 'X-Consultar-Sii': 'consultarSii' }`).
  * - `QuitadosDeQuery`: los parámetros de query que el SDK fija y no ofrece (`'formato'` en `respaldos.descargar`).
  *
- * Si el cuerpo es opcional en el contrato, todas sus propiedades lo son. Una operación sin parámetros no acepta
- * ninguna propiedad.
+ * Si el cuerpo es opcional en el contrato, va entero o no va: sin ninguna de sus propiedades, o con todas las que su
+ * esquema exige (`Data` y `Contrasenna` juntas). Una operación sin parámetros no acepta ninguna propiedad.
  */
 export type ParamsDelContrato<
   Id extends keyof operations,
   Cabeceras extends Record<string, string> = {},
   QuitadosDeQuery extends string = never,
 > = SinPropiedades<
-  Aplanar<
+  ConCuerpo<
     AmbienteOpcional<
       Seccion<operations[Id]['parameters']['path']> &
         Omit<Seccion<operations[Id]['parameters']['query']>, QuitadosDeQuery> &
-        Renombrar<Seccion<operations[Id]['parameters']['header']>, Cabeceras> &
-        Cuerpo<operations[Id]['requestBody']>
-    >
+        Renombrar<Seccion<operations[Id]['parameters']['header']>, Cabeceras>
+    >,
+    operations[Id]['requestBody']
   >
 >;
 
 /** Una sección de parámetros de openapi-typescript (`path`, `query`, `header`); `{}` si la operación no la tiene. */
 type Seccion<T> = [NonNullable<T>] extends [never] ? {} : NonNullable<T>;
 
-/** Las propiedades del cuerpo JSON; todas opcionales si el cuerpo es opcional, `{}` si no hay cuerpo. */
-type Cuerpo<RequestBody> =
+/**
+ * Los parámetros con las propiedades del cuerpo JSON, en un solo objeto. Si el cuerpo es opcional, la unión de los
+ * parámetros con el cuerpo entero y de los parámetros sin ninguna propiedad del cuerpo: con una, van las obligatorias.
+ */
+type ConCuerpo<Parametros, RequestBody> =
   Seccion<RequestBody> extends { content: { 'application/json': infer Json } }
     ? undefined extends RequestBody
-      ? Partial<Json>
-      : Json
-    : {};
+      ? Aplanar<Parametros & Json> | Aplanar<Parametros & SinCuerpo<Json>>
+      : Aplanar<Parametros & Json>
+    : Aplanar<Parametros>;
+
+/** Ninguna de las propiedades del cuerpo. */
+type SinCuerpo<Json> = { [K in keyof Json]?: never };
 
 /** Cambia el nombre de las propiedades según `Nombres` (nombre en el contrato → nombre en el SDK); quita las demás. */
 type Renombrar<T, Nombres extends Record<string, string>> = {
