@@ -22,7 +22,12 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npm run generate && git diff --exit-code src/generated
+      - name: Contract in canonical format
+        run: node scripts/pull-contract.mjs --from contract/openapi.json && git diff --exit-code contract/
+      - run: npm run generate && git diff --exit-code src/generated test/smoke/examples.generated.ts
       - run: npm run typecheck
       - run: npm test
+      - name: Smoke test against Prism
+        if: matrix.node == 22
+        run: npm run test:smoke
       - run: npm run build

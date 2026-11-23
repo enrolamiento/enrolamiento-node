@@ -24,10 +24,12 @@
     "contract:pull": "node scripts/pull-contract.mjs",
     "generate": "node scripts/generate.mjs",
     "build": "tsc -p .",
-    "test": "vitest run",
+    "test": "vitest run --exclude 'test/smoke/**'",
+    "test:smoke": "vitest run --dir test/smoke",
     "typecheck": "tsc -p tsconfig.test.json"
   },
   "devDependencies": {
+    "@stoplight/prism-cli": "5.16.0",
     "@types/node": "22.20.5",
     "openapi-typescript": "7.13.0",
     "typescript": "5.9.3",

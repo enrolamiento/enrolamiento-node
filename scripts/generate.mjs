@@ -3,10 +3,12 @@
 // - enums.ts: un objeto `as const` y su tipo por cada esquema con `x-enum-varnames`.
 // - schema.ts: los tipos de esquemas y operaciones, con openapi-typescript (solo tipos).
 // - resources.ts: un método por operación, agrupados por x-sdk-group, y los parámetros de cada uno.
+// - test/smoke/examples.generated.ts: parámetros de ejemplo de cada operación, para el humo contra Prism.
 //
 // Uso: node scripts/generate.mjs [--out <directorio>]
-// Sin --out escribe en src/generated. La salida es determinista: el mismo
-// contrato produce los mismos bytes.
+// Escribe src/generated/* y test/smoke/examples.generated.ts debajo de la raíz
+// del repositorio o, con --out, debajo de <directorio>. La salida es
+// determinista: el mismo contrato produce los mismos bytes.
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -16,7 +18,12 @@ import { NOMBRES_DE_ENUM, OVERRIDES } from './overrides.mjs';
 /** @typedef {import('./overrides.mjs').Override} Override */
 
 const CONTRATO = fileURLToPath(new URL('../contract/openapi.json', import.meta.url));
-const SALIDA = fileURLToPath(new URL('../src/generated', import.meta.url));
+const RAIZ = fileURLToPath(new URL('..', import.meta.url));
+/**
+ * Carpeta de cada archivo generado, relativa a la raíz; los que no están aquí van a `src/generated`.
+ * @type {Readonly<Record<string, string>>}
+ */
+const CARPETAS = { 'examples.generated.ts': 'test/smoke' };
 const ENCABEZADO =
   '// Generado por scripts/generate.mjs desde contract/openapi.json. No editar a mano: correr `npm run generate`.\n';
 
@@ -39,8 +46,8 @@ const GLOBALES = new Set([
 ]);
 
 /**
- * Genera `operations.ts`, `enums.ts` y `resources.ts` desde el contrato. Lanza un `Error` que lista todo lo que el
- * contrato tiene y el generador no sabe traducir, con la operación de cada problema.
+ * Genera `operations.ts`, `enums.ts`, `resources.ts` y `examples.generated.ts` desde el contrato. Lanza un `Error`
+ * que lista todo lo que el contrato tiene y el generador no sabe traducir, con la operación de cada problema.
  * @param {any} contrato el contrato OpenAPI ya parseado
  * @param {Readonly<Record<string, Override>>} overrides
  * @param {Readonly<Record<string, string>>} [nombresDeEnum] nombre de exportación de un enum, por nombre de esquema
@@ -63,6 +70,7 @@ export function generar(contrato, overrides, nombresDeEnum = {}) {
     'operations.ts': escribirOperaciones(String(contrato.info?.version), operaciones),
     'enums.ts': escribirEnums(enums),
     'resources.ts': escribirRecursos(operaciones, arbol),
+    'examples.generated.ts': escribirEjemplos(operaciones),
   };
 }
 
@@ -123,6 +131,7 @@ function resolver(contrato, valor, contexto, errores) {
  * @property {Readonly<Record<string, string>>} queryFija
  * @property {{ automatico: string[], manual: string[], nunca: string[] }} reintentable
  * @property {MetodoLeido} sdk lo que hace falta para el método del cliente; no va a `operations.ts`
+ * @property {Record<string, unknown>} ejemplo los parámetros de ejemplo del método; no va a `operations.ts`
  */
 
 /**
@@ -227,8 +236,11 @@ function leerOperacion(contrato, id, metodo, ruta, item, op, override, errores) 
 
   const reintentable = leerReintentable(id, op['x-reintentable'], errores);
   const sdk = leerMetodo(contrato, id, op, [...parametros.values()], quitar, errores);
-
   if (errores.length > cantidadDeErrores || !reintentable || !sdk) return undefined;
+
+  // Con los parámetros ya revisados: cada nombre de ruta, de query y de cabecera tiene su parámetro.
+  const ejemplo = armarEjemplo(contrato, id, parametros, { enRuta, enQuery, enCabecera }, op.requestBody, errores);
+  if (errores.length > cantidadDeErrores) return undefined;
   return {
     id,
     metodo,
@@ -243,7 +255,100 @@ function leerOperacion(contrato, id, metodo, ruta, item, op, override, errores) 
     queryFija: override?.queryFija ?? {},
     reintentable,
     sdk,
+    ejemplo,
   };
+}
+
+/**
+ * Los parámetros de ejemplo de una operación, en el objeto que recibe su método: los de ruta (en el orden de la
+ * plantilla), los de query (ordenados), los de cabecera (por su nombre en el SDK) y las propiedades del ejemplo del
+ * cuerpo. `ambiente` vale siempre 0 (homologación). Anota un error si el cuerpo es obligatorio y no trae ejemplo,
+ * si su ejemplo no es un objeto o si una de sus propiedades se llama como un parámetro.
+ * @param {any} contrato
+ * @param {string} id
+ * @param {Map<string, any>} parametros ya resueltos, por `lugar:nombre`
+ * @param {{ enRuta: string[], enQuery: string[], enCabecera: Record<string, string> }} lugares
+ * @param {any} requestBody
+ * @param {string[]} errores
+ * @returns {Record<string, unknown>}
+ */
+function armarEjemplo(contrato, id, parametros, { enRuta, enQuery, enCabecera }, requestBody, errores) {
+  /** @type {[string, string][]} nombre en el SDK y clave del parámetro */
+  const claves = [
+    ...enRuta.map((nombre) => /** @type {[string, string]} */ ([nombre, `path:${nombre}`])),
+    ...enQuery.map((nombre) => /** @type {[string, string]} */ ([nombre, `query:${nombre}`])),
+    ...Object.entries(enCabecera).map(
+      ([nombre, cabecera]) => /** @type {[string, string]} */ ([nombre, `header:${cabecera}`]),
+    ),
+  ];
+  /** @type {Record<string, unknown>} */
+  const ejemplo = {};
+  for (const [nombre, claveDelParametro] of claves) {
+    ejemplo[nombre] = valorDeEjemplo(contrato, id, parametros.get(claveDelParametro), errores);
+  }
+
+  if (requestBody === undefined) return ejemplo;
+  const cuerpo = resolver(contrato, requestBody, id, []);
+  const contenido = cuerpo?.content?.['application/json'];
+  const delCuerpo = contenido === undefined ? undefined : primerEjemplo(contrato, id, contenido, errores);
+  if (delCuerpo === undefined) {
+    if (cuerpo?.required === true) {
+      errores.push(`${id}: el cuerpo es obligatorio y el contrato no trae un ejemplo de él para examples.generated.ts`);
+    }
+    return ejemplo;
+  }
+  if (delCuerpo === null || typeof delCuerpo !== 'object' || Array.isArray(delCuerpo)) {
+    errores.push(`${id}: el ejemplo del cuerpo no es un objeto`);
+    return ejemplo;
+  }
+  for (const [nombre, valor] of Object.entries(delCuerpo)) {
+    if (Object.hasOwn(ejemplo, nombre)) {
+      errores.push(`${id}: el ejemplo del cuerpo trae \`${nombre}\`, que se llama como un parámetro`);
+    } else {
+      ejemplo[nombre] = valor;
+    }
+  }
+  return ejemplo;
+}
+
+/**
+ * El valor de ejemplo de un parámetro: 0 para `ambiente`; si no, el `example` del parámetro o de su esquema (o el
+ * primero de sus `examples`); si no hay, `'11111111-1'` si el nombre contiene «rut», 1 para un entero, `true` para
+ * un booleano y `'x'` para lo demás.
+ * @param {any} contrato
+ * @param {string} id
+ * @param {any} parametro ya resuelto
+ * @param {string[]} errores
+ * @returns {unknown}
+ */
+function valorDeEjemplo(contrato, id, parametro, errores) {
+  if (parametro.name === 'ambiente') return 0;
+  const esquema = resolver(contrato, parametro.schema, id, []);
+  const delContrato = primerEjemplo(contrato, id, parametro, errores) ?? primerEjemplo(contrato, id, esquema, errores);
+  if (delContrato !== undefined) return delContrato;
+  if (/rut/i.test(parametro.name)) return '11111111-1';
+  if (esquema?.type === 'integer') return 1;
+  if (esquema?.type === 'boolean') return true;
+  return 'x';
+}
+
+/**
+ * El `example` de un objeto del contrato (parámetro, esquema o media type) o el primero de sus `examples`: el
+ * primer elemento si es una lista (JSON Schema) o el `value` del primero si es un mapa (OpenAPI).
+ * @param {any} contrato
+ * @param {string} id
+ * @param {any} objeto
+ * @param {string[]} errores
+ * @returns {unknown} `undefined` si no trae ninguno
+ */
+function primerEjemplo(contrato, id, objeto, errores) {
+  if (objeto === null || typeof objeto !== 'object') return undefined;
+  if (objeto.example !== undefined) return objeto.example;
+  const { examples } = objeto;
+  if (Array.isArray(examples)) return examples[0];
+  if (examples === null || typeof examples !== 'object') return undefined;
+  const primero = Object.values(examples)[0];
+  return primero === undefined ? undefined : resolver(contrato, primero, id, errores)?.value;
 }
 
 /**
@@ -524,7 +629,7 @@ function escribirOperaciones(version, operaciones) {
     '/** Una entrada por operación del contrato, por `operationId`. Los alias (`x-alias-de`) no están. */',
     'export const OPERACIONES: { readonly [id: string]: Operacion } = {',
   ];
-  for (const { sdk, ...op } of operaciones) lineas.push(`  ${clave(op.id)}: ${literal(op, '  ')},`);
+  for (const { sdk, ejemplo, ...op } of operaciones) lineas.push(`  ${clave(op.id)}: ${literal(op, '  ')},`);
   lineas.push('};', '');
   return lineas.join('\n');
 }
@@ -633,6 +738,25 @@ function ordenadas(mapa) {
   return [...mapa].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
+/**
+ * `examples.generated.ts`: los parámetros de ejemplo de cada operación (`EJEMPLOS`), por `operationId`.
+ * @param {OperacionLeida[]} operaciones
+ */
+function escribirEjemplos(operaciones) {
+  const lineas = [
+    ENCABEZADO,
+    '/**',
+    ' * Parámetros de ejemplo de cada operación, por `operationId`, en el objeto que recibe su método: el `example` del',
+    " * contrato, o `'11111111-1'` para un RUT, `1` para un entero, `true` para un booleano y `'x'` para lo demás;",
+    ' * `ambiente` siempre 0, y las propiedades del ejemplo del cuerpo. Los usa el humo contra Prism.',
+    ' */',
+    'export const EJEMPLOS: { readonly [id: string]: Readonly<Record<string, unknown>> } = {',
+  ];
+  for (const op of operaciones) lineas.push(`  ${clave(op.id)}: ${literal(op.ejemplo, '  ')},`);
+  lineas.push('};', '');
+  return lineas.join('\n');
+}
+
 /** @param {EnumLeido[]} enums */
 function escribirEnums(enums) {
   const lineas = [ENCABEZADO.trimEnd()];
@@ -673,19 +797,21 @@ function clave(nombre) {
 }
 
 /**
- * El valor como literal de TypeScript. Los arreglos van en una línea si caben en 100 columnas.
+ * El valor como literal de TypeScript. Los arreglos van en una línea si caben en 100 columnas y ningún elemento
+ * ocupa más de una.
  * @param {unknown} valor
  * @param {string} sangria la de la línea donde empieza el valor
  * @returns {string}
  */
 function literal(valor, sangria) {
+  if (valor === null) return 'null';
   if (typeof valor === 'string') return cadena(valor);
   if (typeof valor === 'number' || typeof valor === 'boolean') return String(valor);
   const interior = `${sangria}  `;
   if (Array.isArray(valor)) {
     if (valor.length === 0) return '[]';
     const enLinea = `[${valor.map((v) => literal(v, interior)).join(', ')}]`;
-    if (sangria.length + enLinea.length <= 100) return enLinea;
+    if (!enLinea.includes('\n') && sangria.length + enLinea.length <= 100) return enLinea;
     return `[\n${valor.map((v) => `${interior}${literal(v, interior)},`).join('\n')}\n${sangria}]`;
   }
   if (valor !== null && typeof valor === 'object') {
@@ -696,10 +822,13 @@ function literal(valor, sangria) {
   throw new Error(`no se puede escribir ${String(valor)} como literal`);
 }
 
-/** @param {string[]} args */
+/**
+ * La raíz debajo de la que se escriben los archivos: la del repositorio o la de `--out`.
+ * @param {string[]} args
+ */
 function leerSalida(args) {
   const i = args.indexOf('--out');
-  if (i === -1) return SALIDA;
+  if (i === -1) return RAIZ;
   const directorio = args[i + 1];
   if (!directorio) throw new Error('--out necesita un directorio');
   return resolve(directorio);
@@ -709,9 +838,12 @@ async function main() {
   const salida = leerSalida(process.argv.slice(2));
   const contrato = JSON.parse(await readFile(CONTRATO, 'utf8'));
   const archivos = { ...generar(contrato, OVERRIDES, NOMBRES_DE_ENUM), 'schema.ts': await generarEsquema(contrato) };
-  await mkdir(salida, { recursive: true });
-  for (const [nombre, texto] of Object.entries(archivos)) await writeFile(join(salida, nombre), texto);
-  console.log(`${salida} escrito desde el contrato ${contrato.info?.version}`);
+  for (const [nombre, texto] of Object.entries(archivos)) {
+    const carpeta = join(salida, CARPETAS[nombre] ?? 'src/generated');
+    await mkdir(carpeta, { recursive: true });
+    await writeFile(join(carpeta, nombre), texto);
+  }
+  console.log(`Archivos generados debajo de ${salida} desde el contrato ${contrato.info?.version}`);
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

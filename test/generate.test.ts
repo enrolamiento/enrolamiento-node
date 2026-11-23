@@ -8,6 +8,7 @@ import { NOMBRES_DE_ENUM, OVERRIDES } from '../scripts/overrides.mjs';
 import * as enums from '../src/generated/enums.js';
 import { Ambiente } from '../src/generated/enums.js';
 import { OPERACIONES, VERSION_DEL_CONTRATO } from '../src/generated/operations.js';
+import { EJEMPLOS } from './smoke/examples.generated.js';
 
 const CONTRATO = JSON.parse(readFileSync('contract/openapi.json', 'utf8'));
 
@@ -173,12 +174,18 @@ test('regenerar no cambia nada', () => {
   const directorio = mkdtempSync(join(tmpdir(), 'enrolamiento-generate-'));
   try {
     execFileSync(process.execPath, ['scripts/generate.mjs', '--out', directorio], { stdio: 'pipe' });
-    const generados = readdirSync(directorio).sort();
+    expect(readdirSync(directorio).sort()).toEqual(['src', 'test']);
+    const generados = readdirSync(join(directorio, 'src/generated')).sort();
     expect(generados).toEqual(['enums.ts', 'operations.ts', 'resources.ts', 'schema.ts']);
     expect(readdirSync('src/generated').sort()).toEqual(generados);
-    for (const archivo of generados) {
+    const archivos = [
+      ...generados.map((archivo) => join('src/generated', archivo)),
+      'test/smoke/examples.generated.ts',
+    ];
+    expect(readdirSync(join(directorio, 'test/smoke'))).toEqual(['examples.generated.ts']);
+    for (const archivo of archivos) {
       const nuevo = readFileSync(join(directorio, archivo));
-      expect(nuevo.equals(readFileSync(join('src/generated', archivo))), archivo).toBe(true);
+      expect(nuevo.equals(readFileSync(archivo)), archivo).toBe(true);
     }
   } finally {
     rmSync(directorio, { recursive: true, force: true });
@@ -323,7 +330,12 @@ test('resources.ts: params es opcional si la operación no tiene nada obligatori
   const conCuerpoObligatorio = JSON.parse(texto);
   conCuerpoObligatorio.paths['/v1/x'].post.requestBody = {
     required: true,
-    content: { 'application/json': { schema: { type: 'object', required: ['Data'], properties: { Data: { type: 'string' } } } } },
+    content: {
+      'application/json': {
+        schema: { type: 'object', required: ['Data'], properties: { Data: { type: 'string' } } },
+        example: { Data: 'MIIC' },
+      },
+    },
   };
   expect(generar(conCuerpoObligatorio, {})['resources.ts']).toContain("    params: ParamsDe<'x_v1_op'>,");
 });
@@ -344,4 +356,119 @@ test('falla sin x-sdk-group, x-sdk-name o summary, o si dos métodos quedan en e
     post: { ...grupoYMetodo.paths['/v1/x/{rut}'].post, operationId: 'x_v1_otra', 'x-sdk-group': 'x.v1', 'x-sdk-name': 'op' },
   };
   expect(() => generar(grupoYMetodo, {})).toThrow(/x\.v1/);
+});
+
+test('examples.generated.ts: el ejemplo del contrato o uno por tipo, ambiente 0 y el cuerpo aplanado', () => {
+  const parametro = (lugar: string, name: string, schema: unknown, extra: Record<string, unknown> = {}) => ({
+    in: lugar,
+    name,
+    schema,
+    ...extra,
+  });
+  const contrato = contratoArmado({
+    parameters: [
+      parametro('path', 'rut', { type: 'string' }, { required: true }),
+      parametro('query', 'ambiente', { $ref: '#/components/schemas/Ambiente' }, { example: 1 }),
+      parametro('query', 'cantidad', { type: 'integer' }),
+      parametro('query', 'antiguos', { type: 'boolean' }),
+      parametro('query', 'mensaje', { type: 'string' }),
+      parametro('query', 'rutUsuario', { type: 'string' }),
+      parametro('query', 'conEjemplo', { type: 'integer' }, { example: 36 }),
+      parametro('query', 'conExamples', { type: 'string' }, { examples: { uno: { value: 'r33-1101' }, dos: { value: 'otro' } } }),
+      parametro('query', 'enEsquema', { type: 'string', examples: ['del-esquema'] }),
+      parametro('header', 'X-Consultar-Sii', { type: 'string' }, { example: 'forzar' }),
+    ],
+    requestBody: {
+      content: {
+        'application/json': {
+          schema: { type: 'object', properties: { Data: { type: 'string' }, Contrasenna: { type: 'string' } } },
+          example: { Contrasenna: '********', Data: 'MIIC', Extra: null },
+        },
+      },
+    },
+  });
+  expect(generar(contrato, {})['examples.generated.ts']).toBe(
+    [
+      '// Generado por scripts/generate.mjs desde contract/openapi.json. No editar a mano: correr `npm run generate`.',
+      '',
+      '/**',
+      ' * Parámetros de ejemplo de cada operación, por `operationId`, en el objeto que recibe su método: el `example` del',
+      " * contrato, o `'11111111-1'` para un RUT, `1` para un entero, `true` para un booleano y `'x'` para lo demás;",
+      ' * `ambiente` siempre 0, y las propiedades del ejemplo del cuerpo. Los usa el humo contra Prism.',
+      ' */',
+      'export const EJEMPLOS: { readonly [id: string]: Readonly<Record<string, unknown>> } = {',
+      '  x_v1_op: {',
+      "    rut: '11111111-1',",
+      '    ambiente: 0,',
+      '    antiguos: true,',
+      '    cantidad: 1,',
+      '    conEjemplo: 36,',
+      "    conExamples: 'r33-1101',",
+      "    enEsquema: 'del-esquema',",
+      "    mensaje: 'x',",
+      "    rutUsuario: '11111111-1',",
+      "    consultarSii: 'forzar',",
+      "    Contrasenna: '********',",
+      "    Data: 'MIIC',",
+      '    Extra: null,',
+      '  },',
+      '};',
+      '',
+    ].join('\n'),
+  );
+});
+
+test('examples.generated.ts: sin parámetros, un objeto vacío; el ambiente en la ruta también es 0', () => {
+  const sinParametros = contratoArmado({ parameters: [] });
+  const texto = JSON.stringify(sinParametros).replaceAll('/v1/x/{rut}', '/v1/x');
+  expect(generar(JSON.parse(texto), {})['examples.generated.ts']).toContain('  x_v1_op: {},\n');
+
+  const enRuta = JSON.parse(JSON.stringify(contratoArmado({})).replaceAll('/v1/x/{rut}', '/v1/x/{rut}/{ambiente}'));
+  enRuta.paths['/v1/x/{rut}/{ambiente}'].post.parameters[1] = {
+    in: 'path',
+    name: 'ambiente',
+    required: true,
+    schema: { $ref: '#/components/schemas/Ambiente' },
+  };
+  expect(generar(enRuta, {})['examples.generated.ts']).toContain("  x_v1_op: {\n    rut: '11111111-1',\n    ambiente: 0,\n  },\n");
+});
+
+test('examples.generated.ts: un cuerpo opcional sin ejemplo se omite; uno obligatorio sin ejemplo hace fallar', () => {
+  const esquema = { type: 'object', properties: { Data: { type: 'string' } } };
+  const opcional = contratoArmado(conCuerpo(esquema));
+  expect(generar(opcional, {})['examples.generated.ts']).toContain("  x_v1_op: {\n    rut: '11111111-1',\n    ambiente: 0,\n  },\n");
+
+  const obligatorio = contratoArmado({ requestBody: { required: true, content: { 'application/json': { schema: esquema } } } });
+  expect(() => generar(obligatorio, {})).toThrow(/x_v1_op.*cuerpo.*obligatorio.*ejemplo/);
+
+  const conExamples = contratoArmado({
+    requestBody: {
+      required: true,
+      content: { 'application/json': { schema: esquema, examples: { uno: { value: { Data: 'MIIC' } } } } },
+    },
+  });
+  expect(generar(conExamples, {})['examples.generated.ts']).toContain("    Data: 'MIIC',\n");
+
+  const noEsObjeto = contratoArmado({
+    requestBody: { content: { 'application/json': { schema: esquema, example: ['MIIC'] } } },
+  });
+  expect(() => generar(noEsObjeto, {})).toThrow(/x_v1_op.*ejemplo del cuerpo.*objeto/);
+
+  const choca = contratoArmado({
+    requestBody: { content: { 'application/json': { schema: esquema, example: { rut: '22222222-2' } } } },
+  });
+  expect(() => generar(choca, {})).toThrow(/x_v1_op.*ejemplo del cuerpo.*`rut`/);
+});
+
+test('EJEMPLOS: una entrada por operación, con los nombres del SDK', () => {
+  expect(Object.keys(EJEMPLOS).sort()).toEqual(Object.keys(OPERACIONES).sort());
+  expect(EJEMPLOS.caf_v1_descargar).toMatchObject({ rut: '11111111-1', ambiente: 0, consultarSii: 'forzar', Data: 'MIIC' });
+  expect(EJEMPLOS.empresas_v1_permisos).toMatchObject({ rutEmpresa: '11111111-1', rutUsuario: '11111111-1', ambiente: 0 });
+  // `formato` lo fija el override: el método no lo recibe.
+  expect(EJEMPLOS.respaldos_v1_descargar).toEqual({ id: '3f9c2a7e5b1d4c08a6e2f0b9d7c41e53' });
+  expect(EJEMPLOS.certificaciones_v1_stats).toEqual({});
+  for (const [id, op] of Object.entries(OPERACIONES)) {
+    expect(Object.hasOwn(EJEMPLOS[id]!, 'ambiente'), id).toBe(op.ambiente !== 'no');
+    if (op.ambiente !== 'no') expect(EJEMPLOS[id]!['ambiente'], id).toBe(0);
+  }
 });
