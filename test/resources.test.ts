@@ -7,6 +7,7 @@ import * as enums from '../src/generated/enums.js';
 import { OPERACIONES, VERSION_DEL_CONTRATO } from '../src/generated/operations.js';
 import * as entrada from '../src/index.js';
 import { VERSION } from '../src/version.js';
+import { webhooks } from '../src/webhooks.js';
 
 const CONTRATO = JSON.parse(readFileSync('contract/openapi.json', 'utf8'));
 const RUT = '11111111-1';
@@ -203,13 +204,14 @@ test('las opciones del pedido llegan al núcleo', async () => {
 
 test('el punto de entrada exporta el cliente, las clases de error, los enums y las versiones', () => {
   const clasesDeError = Object.entries(errores).filter(([, valor]) => typeof valor === 'function' && /^[A-Z]/.test(valor.name));
-  expect(clasesDeError.map(([nombre]) => nombre)).toHaveLength(9);
+  expect(clasesDeError.map(([nombre]) => nombre)).toHaveLength(10);
   expect(Object.keys(entrada).sort()).toEqual(
-    ['default', ...clasesDeError.map(([nombre]) => nombre), ...Object.keys(enums), 'VERSION', 'VERSION_DEL_CONTRATO'].sort(),
+    ['default', ...clasesDeError.map(([nombre]) => nombre), ...Object.keys(enums), 'VERSION', 'VERSION_DEL_CONTRATO', 'webhooks'].sort(),
   );
   expect(entrada.default).toBe(Enrolamiento);
   for (const [nombre, clase] of clasesDeError) expect((entrada as Record<string, unknown>)[nombre], nombre).toBe(clase);
   expect(entrada.SetDePruebas).toBe(enums.SetDePruebas);
   expect(entrada.VERSION).toBe(VERSION);
   expect(entrada.VERSION_DEL_CONTRATO).toBe(VERSION_DEL_CONTRATO);
+  expect(entrada.webhooks).toBe(webhooks);
 });

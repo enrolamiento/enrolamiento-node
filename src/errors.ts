@@ -171,3 +171,11 @@ function leerReintentable(valor: string | null): Reintentable | null {
 function mensajeNoVacio(mensaje: string): string {
   return mensaje.trim() === '' ? 'La API respondió con un error sin mensaje.' : mensaje;
 }
+
+/**
+ * Un webhook no pasó la verificación: falta una cabecera, la firma no corresponde, la fecha está fuera
+ * de la tolerancia o el cuerpo no es un evento. Responda con un 4xx y no procese la entrega.
+ */
+export class ErrorDeFirma extends EnrolamientoError {
+  override name = 'ErrorDeFirma';
+}
