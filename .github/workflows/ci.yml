@@ -31,3 +31,9 @@ jobs:
         if: matrix.node == 22
         run: npm run test:smoke
       - run: npm run build
+      - name: Package checks (publint, attw)
+        if: matrix.node == 22
+        run: npm run check:package
+      - name: Packed package and README code blocks
+        if: matrix.node == 22
+        run: npm run test:package

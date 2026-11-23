@@ -1,10 +1,25 @@
 {
   "name": "enrolamiento",
   "version": "0.1.0",
-  "description": "SDK oficial de la API de Enrolamiento para Node",
-  "type": "module",
-  "license": "MIT",
+  "description": "SDK oficial de la API de Enrolamiento para Node: certificaciones ante el SII, CAF, certificados, empresas, portabilidad y respaldos, con errores tipados, reintentos según el contrato y verificación de webhooks.",
+  "keywords": [
+    "enrolamiento",
+    "sii",
+    "chile",
+    "dte",
+    "caf",
+    "factura-electronica",
+    "certificacion",
+    "api",
+    "sdk"
+  ],
+  "homepage": "https://developers.enrolamiento.cl",
+  "bugs": {
+    "email": "soporte@enrolamiento.cl"
+  },
   "repository": "github:enrolamiento/enrolamiento-node",
+  "license": "MIT",
+  "type": "module",
   "engines": {
     "node": ">=22.12"
   },
@@ -20,18 +35,23 @@
     "CHANGELOG.md",
     "LICENSE"
   ],
+  "sideEffects": false,
   "scripts": {
     "contract:pull": "node scripts/pull-contract.mjs",
     "generate": "node scripts/generate.mjs",
     "build": "tsc -p .",
-    "test": "vitest run --exclude 'test/smoke/**'",
+    "test": "vitest run --exclude 'test/smoke/**' --exclude test/package.test.ts --exclude test/readme.test.ts",
     "test:smoke": "vitest run --dir test/smoke",
-    "typecheck": "tsc -p tsconfig.test.json"
+    "typecheck": "tsc -p tsconfig.test.json",
+    "check:package": "npm run build && publint --strict && attw --pack --profile esm-only",
+    "test:package": "vitest run test/package.test.ts test/readme.test.ts"
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "0.18.5",
     "@stoplight/prism-cli": "5.14.2",
     "@types/node": "22.20.5",
     "openapi-typescript": "7.13.0",
+    "publint": "0.3.25",
     "typescript": "5.9.3",
     "vitest": "5.1.1"
   },
