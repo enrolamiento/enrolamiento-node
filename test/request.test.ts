@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import Enrolamiento from '../src/client.js';
 import { ErrorDeApi, ErrorDeConexion, ErrorDeConfiguracion, ErrorDeNegocio, errorDeRespuesta } from '../src/errors.js';
 import { OPERACIONES } from '../src/generated/operations.js';
-import { Nucleo, PromesaDeApi, type OpcionesDeCliente, type Operacion } from '../src/request.js';
+import { crearPedir, PromesaDeApi, type OpcionesDeCliente, type Operacion } from '../src/request.js';
 import { VERSION } from '../src/version.js';
 
 const USUARIO = '77777777-7';
@@ -18,6 +18,7 @@ function operacion(parcial: Partial<Operacion> = {}): Operacion {
     enRuta: [],
     enQuery: [],
     enCabecera: {},
+    enCuerpo: [],
     cuerpo: 'ninguno',
     idempotente: true,
     ambiente: 'no',
@@ -35,6 +36,7 @@ const CAF_DESCARGAR = operacion({
   enRuta: ['rut', 'tipoDocumento', 'cantidad'],
   enQuery: ['ambiente', 'descargarCafAntiguos', 'ultimoFolio'],
   enCabecera: { consultarSii: 'X-Consultar-Sii' },
+  enCuerpo: ['Contrasenna', 'Data'],
   cuerpo: 'plano',
   idempotente: false,
   ambiente: 'query',
@@ -65,8 +67,10 @@ const EMPRESAS_PERMISOS = operacion({
   metodo: 'POST',
   ruta: '/v1/empresas/{rutEmpresa}/permisos/{rutUsuario}/{ambiente}',
   enRuta: ['rutEmpresa', 'rutUsuario', 'ambiente'],
+  enCuerpo: ['Contrasenna', 'Data'],
   cuerpo: 'plano',
   ambiente: 'ruta',
+  ambienteObligatorio: true,
 });
 
 interface PedidoRegistrado {
@@ -108,8 +112,13 @@ function fetchColgado() {
   );
 }
 
-function cliente(f: { fetch: typeof fetch }, opciones: OpcionesDeCliente = {}): Enrolamiento {
-  return new Enrolamiento({ usuario: USUARIO, apikey: APIKEY, fetch: f.fetch, ...opciones });
+/** El núcleo de pedidos, que el cliente no expone: envía una `Operacion` armada a mano. */
+function nucleo(opciones: OpcionesDeCliente) {
+  return { pedir: crearPedir(opciones) };
+}
+
+function cliente(f: { fetch: typeof fetch }, opciones: OpcionesDeCliente = {}) {
+  return nucleo({ usuario: USUARIO, apikey: APIKEY, fetch: f.fetch, ...opciones });
 }
 
 beforeEach(() => {
@@ -152,7 +161,7 @@ describe('arma el pedido', () => {
     vi.stubEnv('ENROLAMIENTO_USUARIO', USUARIO);
     vi.stubEnv('ENROLAMIENTO_APIKEY', APIKEY);
     const f = fetchFalso();
-    await new Enrolamiento({ fetch: f.fetch, urlBase: 'http://127.0.0.1:4010/' }).pedir(operacion(), {});
+    await nucleo({ fetch: f.fetch, urlBase: 'http://127.0.0.1:4010/' }).pedir(operacion(), {});
     expect(f.pedidos[0]!.url).toBe('http://127.0.0.1:4010/v1/prueba');
     expect(f.pedidos[0]!.cabeceras.get('Authorization')).toBe(BASIC);
   });
@@ -214,13 +223,14 @@ describe('arma el pedido', () => {
     ]);
   });
 
-  test('lo que no es de ruta ni de query va al cuerpo JSON con Content-Type', async () => {
+  test('las propiedades de enCuerpo van al cuerpo JSON con Content-Type', async () => {
     const f = fetchFalso();
     const op = operacion({
       metodo: 'POST',
       ruta: '/v1/x/{rut}',
       enRuta: ['rut'],
       enQuery: ['forzar'],
+      enCuerpo: ['Contrasenna', 'Data', 'Lista'],
       cuerpo: 'plano',
       ambiente: 'query',
     });
@@ -308,16 +318,16 @@ describe('credenciales', () => {
   test('sin credenciales lanza ErrorDeConfiguracion que nombra las dos variables, sin llamar a fetch', async () => {
     const f = fetchFalso();
     // Construir el cliente sin entorno no lanza: las credenciales se resuelven en el primer pedido.
-    const sinNada = new Enrolamiento({ fetch: f.fetch });
+    const sinNada = nucleo({ fetch: f.fetch });
     const promesa = sinNada.pedir(operacion(), {});
     await expect(promesa).rejects.toThrow(ErrorDeConfiguracion);
     await expect(promesa).rejects.toThrow(/ENROLAMIENTO_USUARIO/);
     await expect(promesa).rejects.toThrow(/ENROLAMIENTO_APIKEY/);
 
-    await expect(new Enrolamiento({ fetch: f.fetch, usuario: USUARIO }).pedir(operacion(), {})).rejects.toThrow(
+    await expect(nucleo({ fetch: f.fetch, usuario: USUARIO }).pedir(operacion(), {})).rejects.toThrow(
       ErrorDeConfiguracion,
     );
-    await expect(new Enrolamiento({ fetch: f.fetch, apikey: APIKEY }).pedir(operacion(), {})).rejects.toThrow(
+    await expect(nucleo({ fetch: f.fetch, apikey: APIKEY }).pedir(operacion(), {})).rejects.toThrow(
       ErrorDeConfiguracion,
     );
     expect(f.fn).not.toHaveBeenCalled();
@@ -370,10 +380,14 @@ describe('ambiente', () => {
 
   test('un ambiente que no es 0 ni 1 (2, "0", "abc", null) lanza ErrorDeConfiguracion en cualquier operación que lo reciba', async () => {
     const f = fetchFalso();
+    const casos: [Operacion, Record<string, unknown>][] = [
+      [ENQUERY, { rut: '1-9' }],
+      [EMPRESAS_PERMISOS, { rutEmpresa: '1-9', rutUsuario: '2-7' }],
+      [CAF_DESCARGAR, { rut: '1-9', tipoDocumento: 33, cantidad: 1 }],
+    ];
     for (const ambiente of [2, '0', 'abc', null, -1, 0.5, Number.NaN]) {
-      for (const op of [ENQUERY, EMPRESAS_PERMISOS, CAF_DESCARGAR]) {
-        const params = { rut: '1-9', rutEmpresa: '1-9', rutUsuario: '2-7', tipoDocumento: 33, cantidad: 1, ambiente };
-        const promesa = cliente(f).pedir(op, params);
+      for (const [op, deLaOperacion] of casos) {
+        const promesa = cliente(f).pedir(op, { ...deLaOperacion, ambiente });
         await expect(promesa).rejects.toThrow(ErrorDeConfiguracion);
         await expect(promesa).rejects.toThrow(/ambiente/);
       }
@@ -405,10 +419,107 @@ describe('ambiente', () => {
     expect(f.fn).not.toHaveBeenCalled();
   });
 
-  test('ambiente en ruta sin valor omite el segmento', async () => {
+  test('ambiente en la ruta sin valor lanza ErrorDeConfiguracion, aunque la operación no lo marque obligatorio', async () => {
     const f = fetchFalso();
-    await cliente(f).pedir(EMPRESAS_PERMISOS, { rutEmpresa: '1-9', rutUsuario: '2-7' });
-    expect(f.pedidos[0]!.url).toBe('https://api.enrolamiento.cl/v1/empresas/1-9/permisos/2-7');
+    const noMarcada = { ...EMPRESAS_PERMISOS, ambienteObligatorio: false };
+    for (const op of [EMPRESAS_PERMISOS, noMarcada]) {
+      const promesa = cliente(f).pedir(op, { rutEmpresa: '1-9', rutUsuario: '2-7' });
+      await expect(promesa).rejects.toBeInstanceOf(ErrorDeConfiguracion);
+      await expect(promesa).rejects.toThrow(/ambiente/);
+    }
+    expect(f.fn).not.toHaveBeenCalled();
+  });
+
+  test('el mensaje de un ambiente que falta pide definirlo en el cliente', async () => {
+    const op = { ...ENQUERY, ambienteObligatorio: true };
+    const error: unknown = await cliente(fetchFalso()).pedir(op, { rut: '1-9' }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ErrorDeConfiguracion);
+    expect((error as Error).message).toMatch(/new Enrolamiento\(\{ ambiente/);
+  });
+
+  test('ambiente en una operación que no lo recibe es un parámetro desconocido', async () => {
+    const f = fetchFalso();
+    const promesa = cliente(f).pedir(operacion({ cuerpo: 'plano', enCuerpo: ['Data'] }), { ambiente: 0, Data: 'x' });
+    await expect(promesa).rejects.toBeInstanceOf(ErrorDeConfiguracion);
+    await expect(promesa).rejects.toThrow(/`ambiente`/);
+    expect(f.fn).not.toHaveBeenCalled();
+  });
+});
+
+describe('claves desconocidas', () => {
+  test('`Ambiente` y `ambiete` en caf.listar lanzan antes de fetch, nombran la clave y sugieren `ambiente`', async () => {
+    for (const ambienteDelCliente of [undefined, 1] as const) {
+      const f = fetchFalso();
+      const c = new Enrolamiento({ usuario: USUARIO, apikey: APIKEY, fetch: f.fetch, ambiente: ambienteDelCliente });
+      for (const clave of ['Ambiente', 'ambiete', 'AMBIENTE', 'ambiente_']) {
+        const error: unknown = await c.caf
+          .listar({ rut: '1-9', tipoDocumento: 33, [clave]: 0 } as never)
+          .catch((e: unknown) => e);
+        expect(error, clave).toBeInstanceOf(ErrorDeConfiguracion);
+        const { message } = error as Error;
+        expect(message, clave).toContain(`\`${clave}\``);
+        expect(message, clave).toContain('¿quiso decir `ambiente`?');
+        expect(message, clave).toContain('caf_v1_listar');
+      }
+      expect(f.fn).not.toHaveBeenCalled();
+    }
+  });
+
+  test('en una operación con cuerpo, una clave fuera de enCuerpo lanza y sugiere la propiedad parecida, sin el valor', async () => {
+    const f = fetchFalso();
+    const params = { rut: '1-9', tipoDocumento: 33, cantidad: 10, ambiente: 0, data: 'MIIsecreto', Contrasena: 'pw-secreta' };
+    const error: unknown = await cliente(f).pedir(CAF_DESCARGAR, params).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ErrorDeConfiguracion);
+    const { message } = error as Error;
+    expect(message).toContain('`data` (¿quiso decir `Data`?)');
+    expect(message).toContain('`Contrasena` (¿quiso decir `Contrasenna`?)');
+    expect(message).not.toContain('MIIsecreto');
+    expect(message).not.toContain('pw-secreta');
+    expect(f.fn).not.toHaveBeenCalled();
+  });
+
+  test('una clave sin parecido se nombra sin sugerencia', async () => {
+    const f = fetchFalso();
+    const params = { rut: '1-9', tipoDocumento: 33, cantidad: 10, ambiente: 0, completamenteOtra: 1 };
+    const error: unknown = await cliente(f).pedir(CAF_DESCARGAR, params).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ErrorDeConfiguracion);
+    expect((error as Error).message).toContain('`completamenteOtra`');
+    expect((error as Error).message).not.toContain('quiso decir');
+  });
+
+  test('en una operación sin cuerpo, una clave desconocida lanza antes de fetch', async () => {
+    const f = fetchFalso();
+    const promesa = cliente(f).pedir(operacion({ ruta: '/v1/x/{rut}', enRuta: ['rut'] }), { rut: '1-9', rutt: '1-9' });
+    await expect(promesa).rejects.toBeInstanceOf(ErrorDeConfiguracion);
+    await expect(promesa).rejects.toThrow(/`rutt` \(¿quiso decir `rut`\?\)/);
+    expect(f.fn).not.toHaveBeenCalled();
+  });
+
+  test('una clave desconocida con valor undefined se ignora (R9)', async () => {
+    const f = fetchFalso();
+    const params = { rut: '1-9', tipoDocumento: 33, cantidad: 10, ambiente: 0, Data: 'd', Contrasenna: 'c', otra: undefined };
+    await cliente(f).pedir(CAF_DESCARGAR, params);
+    await cliente(f).pedir(operacion(), { otra: undefined });
+    expect(JSON.parse(String(f.pedidos[0]!.cuerpo))).toEqual({ Data: 'd', Contrasenna: 'c' });
+    expect(f.fn).toHaveBeenCalledTimes(2);
+  });
+
+  test('una llamada completa y válida sale igual', async () => {
+    const f = fetchFalso();
+    const c = new Enrolamiento({ usuario: USUARIO, apikey: APIKEY, fetch: f.fetch });
+    await c.caf.listar({ rut: '1-9', tipoDocumento: 33, ambiente: 0, Data: 'MIIC', Contrasenna: 'pw' });
+    expect(f.pedidos[0]!.url).toBe('https://api.enrolamiento.cl/v1/caf/1-9/listar/33?ambiente=0');
+    expect(JSON.parse(String(f.pedidos[0]!.cuerpo))).toEqual({ Data: 'MIIC', Contrasenna: 'pw' });
+  });
+
+  test('params que no es un objeto lanza ErrorDeConfiguracion sin copiarlo', async () => {
+    const f = fetchFalso();
+    for (const params of ['una-clave-de-mas-de-veinte', 5, [1], true]) {
+      const error: unknown = await cliente(f).pedir(operacion(), params as never).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ErrorDeConfiguracion);
+      expect((error as Error).message).not.toContain('una-clave');
+    }
+    expect(f.fn).not.toHaveBeenCalled();
   });
 });
 
@@ -437,7 +548,7 @@ describe('respuesta', () => {
     await expect(c.pedir(operacion(), {}).finally(fin)).resolves.toEqual({ n: 1 });
     expect(fin).toHaveBeenCalledOnce();
 
-    const sinCredenciales = new Enrolamiento({ fetch: f.fetch }).pedir(operacion(), {});
+    const sinCredenciales = nucleo({ fetch: f.fetch }).pedir(operacion(), {});
     await expect(sinCredenciales.catch((e: unknown) => e)).resolves.toBeInstanceOf(ErrorDeConfiguracion);
   });
 
@@ -803,8 +914,7 @@ describe('secretos', () => {
   });
 
   test('el cliente no expone la apikey al serializarlo ni al inspeccionarlo', () => {
-    const c = cliente(fetchFalso());
-    expect(c).toBeInstanceOf(Nucleo);
+    const c = new Enrolamiento({ usuario: USUARIO, apikey: APIKEY, fetch: fetchFalso().fetch });
     expect(JSON.stringify(c)).not.toContain(APIKEY);
     expect(inspect(c, { depth: 10, showHidden: true })).not.toContain(APIKEY);
   });

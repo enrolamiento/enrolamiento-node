@@ -3,7 +3,10 @@ import { ErrorDeApi, ErrorDeConexion, ErrorDeConfiguracion, errorDeRespuesta } f
 import { decidirReintento } from './retry.js';
 import { VERSION } from './version.js';
 
-/** Lo que el SDK necesita saber de una operación del contrato para armar su pedido. Sale de `npm run generate`. */
+/**
+ * Lo que el SDK necesita saber de una operación del contrato para armar su pedido. Sale de `npm run generate`.
+ * Es interno: el punto de entrada del paquete no lo exporta.
+ */
 export interface Operacion {
   /** `operationId` del contrato. */
   id: string;
@@ -14,13 +17,21 @@ export interface Operacion {
   enQuery: readonly string[];
   /** Parámetros que van como cabecera HTTP: nombre en el SDK → cabecera, p. ej. `{ consultarSii: 'X-Consultar-Sii' }`. */
   enCabecera: Readonly<Record<string, string>>;
-  /** `'plano'`: lo que no es de ruta ni de query va al cuerpo JSON. `'ninguno'`: la operación no lleva cuerpo. */
+  /** Las propiedades del cuerpo JSON según su esquema, ordenadas; `[]` si la operación no lleva cuerpo. */
+  enCuerpo: readonly string[];
+  /**
+   * `'plano'`: las propiedades de `enCuerpo` van al cuerpo JSON. `'ninguno'`: la operación no lleva cuerpo.
+   * Toda otra clave de los parámetros que no sea de ruta, de query, de cabecera ni `ambiente` se rechaza.
+   */
   cuerpo: 'ninguno' | 'plano';
   /** `true` solo si el contrato marca la operación con `x-idempotente: true`. */
   idempotente: boolean;
   /** Dónde recibe la operación el `ambiente`: en ninguna parte, en la query o como último segmento de la ruta. */
   ambiente: 'no' | 'query' | 'ruta';
-  /** Si es `true`, el SDK no envía el pedido sin `ambiente`: la API correría en producción. */
+  /**
+   * Si es `true`, el SDK no envía el pedido sin `ambiente`: la API correría en producción. El generador lo pone en
+   * toda operación que recibe `ambiente`.
+   */
   ambienteObligatorio: boolean;
   /** Parámetros de query que van siempre, p. ej. `{ formato: 'json' }` en `respaldos.descargar`. */
   queryFija: Readonly<Record<string, string>>;
@@ -107,6 +118,22 @@ const MAX_REINTENTOS = 2;
 const MAX_REINTENTOS_TOPE = 10;
 const ESPERA_MAXIMA_MS = 30000;
 
+/** Envía una operación con sus parámetros. Es lo que `recursos()` recibe para armar los métodos del cliente. */
+export type Pedir = <T>(
+  op: Operacion,
+  params: Record<string, unknown>,
+  opciones?: OpcionesDePedido | null,
+) => PromesaDeApi<T>;
+
+/**
+ * El envío de pedidos de un cliente, como una función: el cliente la pasa a `recursos()` y no la expone. Las
+ * opciones `null` valen como ausentes.
+ */
+export function crearPedir(opciones?: OpcionesDeCliente | null): Pedir {
+  const nucleo = new Nucleo(opciones ?? {});
+  return (op, params, opcionesDePedido) => nucleo.pedir(op, params, opcionesDePedido ?? {});
+}
+
 /** Un pedido listo para enviar. Se arma una vez y sirve para cada intento. */
 interface PedidoArmado {
   url: string;
@@ -121,23 +148,23 @@ interface PedidoArmado {
   esperaMaximaMs: number;
 }
 
-/** Arma y envía los pedidos a la API. `Enrolamiento` lo extiende con un método por operación. */
-export class Nucleo {
+/** Arma y envía los pedidos a la API. Interno: el cliente lo usa a través de `crearPedir`. */
+class Nucleo {
   readonly #opciones: OpcionesDeCliente;
   #autorizacion: string | undefined;
 
-  constructor(opciones: OpcionesDeCliente = {}) {
+  constructor(opciones: OpcionesDeCliente) {
     this.#opciones = { ...opciones };
   }
 
-  /** Envía la operación `op` con `params` (ruta, query y cuerpo en un solo objeto). */
-  pedir<T>(op: Operacion, params: Record<string, unknown>, opciones: OpcionesDePedido = {}): PromesaDeApi<T> {
+  /** Envía la operación `op` con `params` (ruta, query, cabeceras y cuerpo en un solo objeto). */
+  pedir<T>(op: Operacion, params: Record<string, unknown>, opciones: OpcionesDePedido): PromesaDeApi<T> {
     return new PromesaDeApi<T>(this.#ejecutar<T>(op, params, opciones));
   }
 
   async #ejecutar<T>(op: Operacion, params: Record<string, unknown>, opciones: OpcionesDePedido): Promise<DatosYRespuesta<T>> {
     const pedido = this.#armar(op, params, opciones);
-    const { signal } = opciones;
+    const signal = opciones.signal ?? undefined;
     for (let intento = 1; ; intento++) {
       try {
         return await this.#intentar<T>(op, pedido, opciones);
@@ -155,14 +182,18 @@ export class Nucleo {
 
   /** Valida los parámetros y arma URL, cabeceras y cuerpo. Lanza `ErrorDeConfiguracion` sin tocar la red. */
   #armar(op: Operacion, params: Record<string, unknown>, opciones: OpcionesDePedido): PedidoArmado {
+    if (typeof params !== 'object' || params === null || Array.isArray(params)) {
+      throw new ErrorDeConfiguracion(`${op.id}: los parámetros van en un objeto; se recibió ${describir(params)}.`);
+    }
+    rechazarDesconocidos(op, params);
     const autorizacion = this.#resolverAutorizacion();
     const ambiente = op.ambiente === 'no' ? undefined : resolverAmbiente(op, params, this.#opciones.ambiente);
-    const usados = new Set([...op.enRuta, ...op.enQuery, ...Object.keys(op.enCabecera)]);
-    if (op.ambiente !== 'no') usados.add('ambiente');
 
     let ruta = op.ruta;
     if (op.ambiente === 'ruta') {
-      ruta = ambiente === undefined ? ruta.replace('/{ambiente}', '') : ruta.replace('{ambiente}', String(ambiente));
+      // resolverAmbiente ya exige el ambiente; sin él la ruta perdería un segmento y la API correría en producción.
+      if (ambiente === undefined) throw new ErrorDeConfiguracion(mensajeSinAmbiente(op));
+      ruta = ruta.replace('{ambiente}', String(ambiente));
     }
     for (const nombre of op.enRuta) {
       if (nombre === 'ambiente' && op.ambiente === 'ruta') continue;
@@ -189,16 +220,11 @@ export class Nucleo {
     if (op.ambiente === 'query' && ambiente !== undefined) query.append('ambiente', String(ambiente));
     for (const [nombre, valor] of Object.entries(op.queryFija)) query.set(nombre, valor);
 
-    const delCuerpo = Object.keys(params).filter((nombre) => !usados.has(nombre));
     let cuerpo: string | undefined;
     if (op.cuerpo === 'plano') {
-      cuerpo = JSON.stringify(Object.fromEntries(delCuerpo.map((nombre) => [nombre, params[nombre]])));
-    } else {
-      const sobrantes = delCuerpo.filter((nombre) => params[nombre] !== undefined);
-      if (sobrantes.length > 0) {
-        const lista = sobrantes.map((nombre) => `\`${nombre}\``).join(', ');
-        throw new ErrorDeConfiguracion(`${op.id}: la operación no lleva cuerpo y no recibe ${lista}.`);
-      }
+      const delCuerpo = new Set(op.enCuerpo);
+      const propiedades = Object.keys(params).filter((nombre) => delCuerpo.has(nombre));
+      cuerpo = JSON.stringify(Object.fromEntries(propiedades.map((nombre) => [nombre, params[nombre]])));
     }
 
     const cabeceras = new Headers({ Accept: 'application/json', 'User-Agent': `enrolamiento-node/${VERSION}` });
@@ -279,16 +305,66 @@ export class Nucleo {
   }
 }
 
+/**
+ * Rechaza toda clave de `params` que la operación no recibe: una errata (`Ambiente`, `ambiete`) no puede ir al
+ * cuerpo ni perderse, porque sin `ambiente` la API opera en producción. Las claves con valor `undefined` se ignoran.
+ */
+function rechazarDesconocidos(op: Operacion, params: Record<string, unknown>): void {
+  const conocidas = new Set([...op.enRuta, ...op.enQuery, ...Object.keys(op.enCabecera)]);
+  if (op.cuerpo === 'plano') for (const nombre of op.enCuerpo) conocidas.add(nombre);
+  if (op.ambiente === 'no') conocidas.delete('ambiente');
+  else conocidas.add('ambiente');
+  const desconocidas = Object.keys(params).filter((nombre) => !conocidas.has(nombre) && params[nombre] !== undefined);
+  if (desconocidas.length === 0) return;
+  const lista = desconocidas
+    .map((nombre) => {
+      const parecida = parecidaA(nombre, conocidas);
+      const texto = `\`${nombreParaMensaje(nombre)}\``;
+      return parecida === undefined ? texto : `${texto} (¿quiso decir \`${parecida}\`?)`;
+    })
+    .join(', ');
+  throw new ErrorDeConfiguracion(
+    `${op.id}: la operación no recibe ${lista}. No se envió nada: los nombres distinguen mayúsculas y minúsculas.`,
+  );
+}
+
+/** La clave conocida que difiere de `nombre` solo en mayúsculas o en un carácter (de más, de menos o cambiado). */
+function parecidaA(nombre: string, conocidas: ReadonlySet<string>): string | undefined {
+  const ordenadas = [...conocidas].sort();
+  return (
+    ordenadas.find((conocida) => conocida.toLowerCase() === nombre.toLowerCase()) ??
+    ordenadas.find((conocida) => aUnaEdicion(conocida, nombre))
+  );
+}
+
+/** `true` si `a` y `b` difieren en exactamente un carácter insertado, borrado o cambiado. */
+function aUnaEdicion(a: string, b: string): boolean {
+  if (a === b || Math.abs(a.length - b.length) > 1) return false;
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  if (a.length === b.length) return a.slice(i + 1) === b.slice(i + 1);
+  return a.length > b.length ? a.slice(i + 1) === b.slice(i) : a.slice(i) === b.slice(i + 1);
+}
+
+/** Una clave de los parámetros para un mensaje: sin caracteres de control y a lo más 40 caracteres. */
+function nombreParaMensaje(nombre: string): string {
+  const limpio = nombre.replace(/[\x00-\x1f\x7f]/g, '');
+  return limpio.length > 40 ? `${limpio.slice(0, 40)}…` : limpio;
+}
+
+/** El mensaje cuando falta `ambiente`: dónde definirlo. */
+function mensajeSinAmbiente(op: Operacion): string {
+  return (
+    `${op.id}: falta \`ambiente\`. Sin él la API opera en producción. Defínalo al crear el cliente ` +
+    '(`new Enrolamiento({ ambiente: 0 })`; 0 = homologación, 1 = producción) o páselo en la llamada.'
+  );
+}
+
 /** El `ambiente` del pedido: el de la llamada o, si falta, el del cliente. Solo 0, 1 o ninguno. */
 function resolverAmbiente(op: Operacion, params: Record<string, unknown>, delCliente: unknown): 0 | 1 | undefined {
   const valor = params['ambiente'] !== undefined ? params['ambiente'] : delCliente;
   if (valor === undefined) {
-    if (op.ambienteObligatorio) {
-      throw new ErrorDeConfiguracion(
-        `${op.id}: falta \`ambiente\`. Sin él la API opera en producción; ` +
-          'páselo en la llamada o en las opciones del cliente (0 = homologación, 1 = producción).',
-      );
-    }
+    if (op.ambienteObligatorio) throw new ErrorDeConfiguracion(mensajeSinAmbiente(op));
     return undefined;
   }
   if (valor !== 0 && valor !== 1) {

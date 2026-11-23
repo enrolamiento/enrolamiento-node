@@ -1,6 +1,6 @@
 // Generado por scripts/generate.mjs desde contract/openapi.json. No editar a mano: correr `npm run generate`.
 
-import type { Nucleo, OpcionesDePedido, PromesaDeApi } from '../request.js';
+import type { OpcionesDePedido, Pedir, PromesaDeApi } from '../request.js';
 import type { ParamsDe, ParamsDelContrato, RespuestaDe } from '../types.js';
 import { OPERACIONES } from './operations.js';
 
@@ -439,92 +439,92 @@ export interface Recursos {
   };
 }
 
-/** Arma los grupos de métodos del cliente sobre `nucleo`. */
-export function recursos(nucleo: Nucleo): Recursos {
+/** Arma los grupos de métodos del cliente sobre `pedir`, que envía cada operación. */
+export function recursos(pedir: Pedir): Recursos {
   return {
     caf: {
       anulacionMasivaAnular: (params, opciones) =>
-        nucleo.pedir(OPERACIONES['caf_v1_anulacion_masiva_anular'], params ?? {}, opciones),
+        pedir(OPERACIONES['caf_v1_anulacion_masiva_anular'], params ?? {}, opciones),
       anulacionMasivaListar: (params, opciones) =>
-        nucleo.pedir(OPERACIONES['caf_v1_anulacion_masiva_listar'], params ?? {}, opciones),
+        pedir(OPERACIONES['caf_v1_anulacion_masiva_listar'], params ?? {}, opciones),
       anulados: (params, opciones) =>
-        nucleo.pedir(OPERACIONES['caf_v1_anulados'], params ?? {}, opciones),
+        pedir(OPERACIONES['caf_v1_anulados'], params ?? {}, opciones),
       anular: (params, opciones) =>
-        nucleo.pedir(OPERACIONES['caf_v1_anular'], params ?? {}, opciones),
+        pedir(OPERACIONES['caf_v1_anular'], params ?? {}, opciones),
       consulta: (params, opciones) =>
-        nucleo.pedir(OPERACIONES['caf_v1_consulta'], params ?? {}, opciones),
+        pedir(OPERACIONES['caf_v1_consulta'], params ?? {}, opciones),
       descargar: (params, opciones) =>
-        nucleo.pedir(OPERACIONES['caf_v1_descargar'], params ?? {}, opciones),
+        pedir(OPERACIONES['caf_v1_descargar'], params ?? {}, opciones),
       detalleFolios: (params, opciones) =>
-        nucleo.pedir(OPERACIONES['caf_v1_detalle_folios'], params ?? {}, opciones),
+        pedir(OPERACIONES['caf_v1_detalle_folios'], params ?? {}, opciones),
       detalleFoliosTodos: (params, opciones) =>
-        nucleo.pedir(OPERACIONES['caf_v1_detalle_folios_todos'], params ?? {}, opciones),
+        pedir(OPERACIONES['caf_v1_detalle_folios_todos'], params ?? {}, opciones),
       estadoFolios: (params, opciones) =>
-        nucleo.pedir(OPERACIONES['caf_v1_estado_folios'], params ?? {}, opciones),
+        pedir(OPERACIONES['caf_v1_estado_folios'], params ?? {}, opciones),
       listar: (params, opciones) =>
-        nucleo.pedir(OPERACIONES['caf_v1_listar'], params ?? {}, opciones),
+        pedir(OPERACIONES['caf_v1_listar'], params ?? {}, opciones),
       olvidarMemoria: (params, opciones) =>
-        nucleo.pedir(OPERACIONES['caf_v1_memoria'], params ?? {}, opciones),
+        pedir(OPERACIONES['caf_v1_memoria'], params ?? {}, opciones),
       reobtener: (params, opciones) =>
-        nucleo.pedir(OPERACIONES['caf_v1_reobtener'], params ?? {}, opciones),
+        pedir(OPERACIONES['caf_v1_reobtener'], params ?? {}, opciones),
       vencidos: (params, opciones) =>
-        nucleo.pedir(OPERACIONES['caf_v1_vencidos'], params ?? {}, opciones),
+        pedir(OPERACIONES['caf_v1_vencidos'], params ?? {}, opciones),
     },
     certificaciones: {
       v1: {
         actualizar: (params, opciones) =>
-          nucleo.pedir(OPERACIONES['certificaciones_v1_actualizar'], params ?? {}, opciones),
+          pedir(OPERACIONES['certificaciones_v1_actualizar'], params ?? {}, opciones),
         actualizarCasillasIntercambio: (params, opciones) =>
-          nucleo.pedir(OPERACIONES['certificaciones_v1_actualizar_casillas_intercambio'], params ?? {}, opciones),
+          pedir(OPERACIONES['certificaciones_v1_actualizar_casillas_intercambio'], params ?? {}, opciones),
         buscar: (params, opciones) =>
-          nucleo.pedir(OPERACIONES['certificaciones_v1_buscar'], params ?? {}, opciones),
+          pedir(OPERACIONES['certificaciones_v1_buscar'], params ?? {}, opciones),
         consultar: (params, opciones) =>
-          nucleo.pedir(OPERACIONES['certificaciones_v1_consultar'], params ?? {}, opciones),
+          pedir(OPERACIONES['certificaciones_v1_consultar'], params ?? {}, opciones),
         crear: (params, opciones) =>
-          nucleo.pedir(OPERACIONES['certificaciones_v1_crear'], params ?? {}, opciones),
+          pedir(OPERACIONES['certificaciones_v1_crear'], params ?? {}, opciones),
         declararCumplimiento: (params, opciones) =>
-          nucleo.pedir(OPERACIONES['certificaciones_v1_declarar_cumplimiento'], params ?? {}, opciones),
+          pedir(OPERACIONES['certificaciones_v1_declarar_cumplimiento'], params ?? {}, opciones),
         iniciar: (params, opciones) =>
-          nucleo.pedir(OPERACIONES['certificaciones_v1_iniciar'], params ?? {}, opciones),
+          pedir(OPERACIONES['certificaciones_v1_iniciar'], params ?? {}, opciones),
         reiniciar: (params, opciones) =>
-          nucleo.pedir(OPERACIONES['certificaciones_v1_reiniciar'], params ?? {}, opciones),
+          pedir(OPERACIONES['certificaciones_v1_reiniciar'], params ?? {}, opciones),
         stats: (params, opciones) =>
-          nucleo.pedir(OPERACIONES['certificaciones_v1_stats'], params ?? {}, opciones),
+          pedir(OPERACIONES['certificaciones_v1_stats'], params ?? {}, opciones),
       },
       v2: {
         actualizar: (params, opciones) =>
-          nucleo.pedir(OPERACIONES['certificaciones_v2_actualizar'], params ?? {}, opciones),
+          pedir(OPERACIONES['certificaciones_v2_actualizar'], params ?? {}, opciones),
         crear: (params, opciones) =>
-          nucleo.pedir(OPERACIONES['certificaciones_v2_crear'], params ?? {}, opciones),
+          pedir(OPERACIONES['certificaciones_v2_crear'], params ?? {}, opciones),
         iniciar: (params, opciones) =>
-          nucleo.pedir(OPERACIONES['certificaciones_v2_iniciar'], params ?? {}, opciones),
+          pedir(OPERACIONES['certificaciones_v2_iniciar'], params ?? {}, opciones),
       },
     },
     certificados: {
       descargarECert: (params, opciones) =>
-        nucleo.pedir(OPERACIONES['certificados_v1_descargar_e_cert'], params ?? {}, opciones),
+        pedir(OPERACIONES['certificados_v1_descargar_e_cert'], params ?? {}, opciones),
       solicitar: (params, opciones) =>
-        nucleo.pedir(OPERACIONES['certificados_v1_solicitar'], params ?? {}, opciones),
+        pedir(OPERACIONES['certificados_v1_solicitar'], params ?? {}, opciones),
       validar: (params, opciones) =>
-        nucleo.pedir(OPERACIONES['certificados_v1_validar'], params ?? {}, opciones),
+        pedir(OPERACIONES['certificados_v1_validar'], params ?? {}, opciones),
     },
     empresas: {
       datos: (params, opciones) =>
-        nucleo.pedir(OPERACIONES['empresas_v1_datos'], params ?? {}, opciones),
+        pedir(OPERACIONES['empresas_v1_datos'], params ?? {}, opciones),
       permisos: (params, opciones) =>
-        nucleo.pedir(OPERACIONES['empresas_v1_permisos'], params ?? {}, opciones),
+        pedir(OPERACIONES['empresas_v1_permisos'], params ?? {}, opciones),
     },
     portabilidad: {
       sesiones: (params, opciones) =>
-        nucleo.pedir(OPERACIONES['portabilidad_v1_sesiones'], params ?? {}, opciones),
+        pedir(OPERACIONES['portabilidad_v1_sesiones'], params ?? {}, opciones),
     },
     respaldos: {
       consultar: (params, opciones) =>
-        nucleo.pedir(OPERACIONES['respaldos_v1_consultar'], params ?? {}, opciones),
+        pedir(OPERACIONES['respaldos_v1_consultar'], params ?? {}, opciones),
       descargar: (params, opciones) =>
-        nucleo.pedir(OPERACIONES['respaldos_v1_descargar'], params ?? {}, opciones),
+        pedir(OPERACIONES['respaldos_v1_descargar'], params ?? {}, opciones),
       listar: (params, opciones) =>
-        nucleo.pedir(OPERACIONES['respaldos_v1_listar'], params ?? {}, opciones),
+        pedir(OPERACIONES['respaldos_v1_listar'], params ?? {}, opciones),
     },
   };
 }

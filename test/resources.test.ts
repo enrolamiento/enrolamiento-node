@@ -3,11 +3,13 @@ import { describe, expect, test } from 'vitest';
 import Enrolamiento from '../src/client.js';
 import * as errores from '../src/errors.js';
 import { ErrorDeConfiguracion } from '../src/errors.js';
+import type { OpcionesDeCliente } from '../src/request.js';
 import * as enums from '../src/generated/enums.js';
 import { OPERACIONES, VERSION_DEL_CONTRATO } from '../src/generated/operations.js';
 import * as entrada from '../src/index.js';
 import { VERSION } from '../src/version.js';
 import { webhooks } from '../src/webhooks.js';
+import { EJEMPLOS } from './smoke/examples.generated.js';
 
 const CONTRATO = JSON.parse(readFileSync('contract/openapi.json', 'utf8'));
 const RUT = '11111111-1';
@@ -20,7 +22,7 @@ interface PedidoVisto {
 }
 
 /** Un cliente con un `fetch` falso que anota cada pedido y responde 200 con `respuesta` como JSON. */
-function clienteFalso(respuesta: unknown = true) {
+function clienteFalso(respuesta: unknown = true, opciones: OpcionesDeCliente = {}) {
   const pedidos: PedidoVisto[] = [];
   const fetch: typeof globalThis.fetch = async (url, init) => {
     const texto = typeof init?.body === 'string' ? init.body : undefined;
@@ -32,7 +34,7 @@ function clienteFalso(respuesta: unknown = true) {
     });
     return new Response(JSON.stringify(respuesta), { status: 200, headers: { 'Content-Type': 'application/json' } });
   };
-  const cliente = new Enrolamiento({ usuario: '77777777-7', apikey: 'clave-de-prueba', fetch, maxReintentos: 0 });
+  const cliente = new Enrolamiento({ usuario: '77777777-7', apikey: 'clave-de-prueba', fetch, maxReintentos: 0, ...opciones });
   return { cliente, pedidos };
 }
 
@@ -165,6 +167,32 @@ test('ambiente: el del cliente llega a las operaciones que lo reciben y el oblig
   expect(pedidos).toHaveLength(2);
 });
 
+test('toda operación que recibe ambiente, sin él en la llamada ni en el cliente, lanza ErrorDeConfiguracion sin llamar a la API', async () => {
+  const conAmbiente = metodosDelContrato().filter(({ id }) => OPERACIONES[id]!.ambiente !== 'no');
+  expect(conAmbiente).toHaveLength(14);
+  for (const { id, camino } of conAmbiente) {
+    expect(OPERACIONES[id]!.ambienteObligatorio, id).toBe(true);
+    const { ambiente, ...sinAmbiente } = EJEMPLOS[id]!;
+    expect(ambiente, id).toBe(0);
+    const { cliente, pedidos } = clienteFalso();
+    const error: unknown = await metodo(cliente, camino)(sinAmbiente).catch((e: unknown) => e);
+    expect(error, id).toBeInstanceOf(ErrorDeConfiguracion);
+    expect((error as Error).message, id).toMatch(/falta `ambiente`/);
+    expect(pedidos, id).toHaveLength(0);
+    // Con el ambiente del cliente sale.
+    const conCliente = clienteFalso(true, { ambiente: 0 });
+    await metodo(conCliente.cliente, camino)(sinAmbiente);
+    expect(conCliente.pedidos, id).toHaveLength(1);
+  }
+});
+
+test('el cliente no tiene más miembros que sus grupos: ni `pedir` ni otro método del núcleo', () => {
+  const { cliente } = clienteFalso();
+  expect('pedir' in cliente).toBe(false);
+  expect(Object.getOwnPropertyNames(Enrolamiento.prototype)).toEqual(['constructor']);
+  expect(Object.getOwnPropertySymbols(Enrolamiento.prototype)).toEqual([]);
+});
+
 describe('métodos sin parámetros obligatorios', () => {
   /** Las operaciones del contrato sin ningún parámetro obligatorio (salvo `ambiente`) ni cuerpo obligatorio. */
   const sinObligatorios = metodosDelContrato().filter(({ op, parametros }) => {
@@ -206,9 +234,18 @@ test('el punto de entrada exporta el cliente, las clases de error, los enums y l
   const clasesDeError = Object.entries(errores).filter(([, valor]) => typeof valor === 'function' && /^[A-Z]/.test(valor.name));
   expect(clasesDeError.map(([nombre]) => nombre)).toHaveLength(10);
   expect(Object.keys(entrada).sort()).toEqual(
-    ['default', ...clasesDeError.map(([nombre]) => nombre), ...Object.keys(enums), 'VERSION', 'VERSION_DEL_CONTRATO', 'webhooks'].sort(),
+    [
+      'default',
+      'Enrolamiento',
+      ...clasesDeError.map(([nombre]) => nombre),
+      ...Object.keys(enums),
+      'VERSION',
+      'VERSION_DEL_CONTRATO',
+      'webhooks',
+    ].sort(),
   );
   expect(entrada.default).toBe(Enrolamiento);
+  expect(entrada.Enrolamiento).toBe(Enrolamiento);
   for (const [nombre, clase] of clasesDeError) expect((entrada as Record<string, unknown>)[nombre], nombre).toBe(clase);
   expect(entrada.SetDePruebas).toBe(enums.SetDePruebas);
   expect(entrada.VERSION).toBe(VERSION);

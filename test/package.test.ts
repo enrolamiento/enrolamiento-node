@@ -57,6 +57,14 @@ test('cada archivo de dist sale de un .ts de src: nada viejo de un build anterio
   expect(huerfanos).toEqual([]);
 });
 
+test('los tipos publicados no exponen `pedir` ni `Operacion`', () => {
+  for (const ruta of ['dist/index.d.ts', 'dist/client.d.ts']) {
+    const texto = readFileSync(ruta, 'utf8');
+    expect(texto, ruta).not.toMatch(/\bpedir\b/);
+    expect(texto, ruta).not.toMatch(/\bOperacion\b/);
+  }
+});
+
 test('sin dependencias de runtime', () => {
   expect(Object.keys(PAQUETE.dependencies ?? {})).toEqual([]);
   expect(Object.keys(PAQUETE.peerDependencies ?? {})).toEqual([]);
@@ -77,6 +85,8 @@ test('un proyecto que instala el .tgz lo carga con import y con require()', () =
     const errores = ['ErrorDeApi', 'ErrorDeAutenticacion', 'ErrorDeConexion', 'ErrorDeConfiguracion', 'ErrorDeFirma',
       'ErrorDeFramework', 'ErrorDeLimite', 'ErrorDeNegocio', 'ErrorDeTiempoAgotado'];
     const bien = typeof cliente.caf.descargar === 'function'
+      && ${modulo}.Enrolamiento === Enrolamiento
+      && !('pedir' in cliente)
       && typeof cliente.certificaciones.v1.consultar === 'function'
       && errores.every((nombre) => ${modulo}[nombre].prototype instanceof ${modulo}.EnrolamientoError)
       && typeof ${modulo}.webhooks.verificar === 'function'
@@ -85,11 +95,15 @@ test('un proyecto que instala el .tgz lo carga con import y con require()', () =
   writeFileSync(join(proyecto, 'esm.mjs'), `import * as m from 'enrolamiento';\n${comprobar('m')}`);
   writeFileSync(join(proyecto, 'cjs.cjs'), `const m = require('enrolamiento');\n${comprobar('m')}`);
   writeFileSync(
+    join(proyecto, 'con-nombre.cjs'),
+    "const { Enrolamiento } = require('enrolamiento');\nconsole.log(typeof Enrolamiento === 'function' ? 'ok' : 'mal');",
+  );
+  writeFileSync(
     join(proyecto, 'por-omision.mjs'),
     "import Enrolamiento from 'enrolamiento';\nconsole.log(typeof Enrolamiento === 'function' ? 'ok' : 'mal');",
   );
 
-  for (const archivo of ['esm.mjs', 'por-omision.mjs', 'cjs.cjs']) {
+  for (const archivo of ['esm.mjs', 'por-omision.mjs', 'cjs.cjs', 'con-nombre.cjs']) {
     const corrida = spawnSync(process.execPath, [archivo], { cwd: proyecto, encoding: 'utf8' });
     expect({ archivo, status: corrida.status, salida: corrida.stdout.trim() }).toEqual({ archivo, status: 0, salida: 'ok' });
   }

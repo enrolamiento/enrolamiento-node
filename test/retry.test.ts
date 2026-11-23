@@ -12,6 +12,7 @@ function operacion(parcial: Partial<Operacion> = {}): Operacion {
     enRuta: [],
     enQuery: [],
     enCabecera: {},
+    enCuerpo: [],
     cuerpo: 'ninguno',
     idempotente: true,
     ambiente: 'no',

@@ -3,8 +3,10 @@
 import { expectTypeOf, test } from 'vitest';
 import Enrolamiento, {
   Ambiente,
+  Enrolamiento as EnrolamientoConNombre,
   EstadoCertificacion,
   type EventoPrueba,
+  type IdDeOperacion,
   type OpcionesDePedido,
   type ParamsDe,
   type PromesaDeApi,
@@ -13,7 +15,6 @@ import Enrolamiento, {
   webhooks,
 } from '../src/index.js';
 import type { components } from '../src/generated/schema.js';
-import type { IdDeOperacion } from '../src/types.js';
 
 const cliente = new Enrolamiento();
 const rut = '11111111-1';
@@ -169,4 +170,17 @@ test('`respaldo.codigo` es opcional y nullable (los ejemplos de la guía lo omit
     catalogo: null;
     disponible_hasta: null;
   }>().toExtend<Respaldo>();
+});
+
+test('el cliente no expone `pedir` ni otro método del núcleo', () => {
+  // @ts-expect-error `pedir` no es parte del cliente
+  void cliente.pedir;
+  expectTypeOf<keyof Enrolamiento>().toEqualTypeOf<
+    'caf' | 'certificaciones' | 'certificados' | 'empresas' | 'portabilidad' | 'respaldos'
+  >();
+});
+
+test('Enrolamiento también se exporta con nombre, e IdDeOperacion es un tipo público', () => {
+  expectTypeOf(EnrolamientoConNombre).toEqualTypeOf(Enrolamiento);
+  expectTypeOf<'caf_v1_descargar'>().toExtend<IdDeOperacion>();
 });

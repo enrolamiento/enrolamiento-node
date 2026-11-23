@@ -3,7 +3,8 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test } from 'vitest';
-import { generar } from '../scripts/generate.mjs';
+import { MIEMBROS_DEL_CLIENTE, generar } from '../scripts/generate.mjs';
+import Enrolamiento from '../src/client.js';
 import { NOMBRES_DE_ENUM, OVERRIDES } from '../scripts/overrides.mjs';
 import * as enums from '../src/generated/enums.js';
 import { Ambiente } from '../src/generated/enums.js';
@@ -86,10 +87,30 @@ test('ambiente: query o ruta en toda operación que tiene un parámetro ambiente
   expect(cuenta).toEqual({ no: 20, query: 13, ruta: 1 });
 });
 
-test('ambienteObligatorio sale de x-sdk-ambiente-obligatorio', () => {
+test('ambienteObligatorio es true en toda operación que recibe ambiente, la marque el contrato o no', () => {
+  let marcadas = 0;
   for (const { id, op } of operacionesDelContrato()) {
-    if (OPERACIONES[id]) expect(OPERACIONES[id].ambienteObligatorio, id).toBe(op['x-sdk-ambiente-obligatorio'] === true);
+    if (!OPERACIONES[id]) continue;
+    expect(OPERACIONES[id].ambienteObligatorio, id).toBe(OPERACIONES[id].ambiente !== 'no');
+    if (op['x-sdk-ambiente-obligatorio'] === true) {
+      marcadas++;
+      expect(OPERACIONES[id].ambienteObligatorio, id).toBe(true);
+    }
   }
+  expect(marcadas).toBe(3);
+  expect(Object.values(OPERACIONES).filter((op) => op.ambienteObligatorio)).toHaveLength(14);
+});
+
+test('enCuerpo: las propiedades del esquema del cuerpo, ordenadas; [] sin cuerpo', () => {
+  for (const { id, op } of operacionesDelContrato()) {
+    if (!OPERACIONES[id]) continue;
+    const esquema = resolver(resolver(op.requestBody)?.content?.['application/json']?.schema);
+    const esperadas = Object.keys(esquema?.properties ?? {}).sort();
+    expect(OPERACIONES[id].enCuerpo, id).toEqual(esperadas);
+    if (!op.requestBody) expect(OPERACIONES[id].enCuerpo, id).toEqual([]);
+  }
+  expect(OPERACIONES.caf_v1_descargar!.enCuerpo).toEqual(['Contrasenna', 'Data']);
+  expect(OPERACIONES.certificaciones_v1_consultar!.enCuerpo).toEqual([]);
 });
 
 test('enCabecera: los parámetros de cabecera, sin X- y en camelCase', () => {
@@ -231,6 +252,8 @@ function conCuerpo(schema: unknown) {
 test('un contrato armado a mano que no choca genera sin errores', () => {
   const archivos = generar(contratoArmado(conCuerpo({ type: 'object', properties: { Data: { type: 'string' } } })), {});
   expect(archivos['operations.ts']).toContain("cuerpo: 'plano'");
+  expect(archivos['operations.ts']).toContain("enCuerpo: ['Data'],");
+  expect(archivos['operations.ts']).toContain('ambienteObligatorio: true,');
   expect(archivos['operations.ts']).toContain("ambiente: 'query'");
   expect(archivos['enums.ts']).toContain('Homologacion: 0,');
 });
@@ -251,6 +274,37 @@ test('falla si una propiedad del cuerpo choca con un parámetro, o si el cuerpo 
 
   // Una entrada en los overrides acepta el cuerpo tal como venga.
   expect(() => generar(noEsObjeto, { x_v1_op: { motivo: 'prueba' } })).not.toThrow();
+});
+
+test('falla si una propiedad del cuerpo se llama `ambiente` sin distinguir mayúsculas, aun con override', () => {
+  for (const nombre of ['Ambiente', 'AMBIENTE']) {
+    const contrato = contratoArmado(conCuerpo({ type: 'object', properties: { [nombre]: { type: 'integer' } } }));
+    expect(() => generar(contrato, {}), nombre).toThrow(new RegExp(`x_v1_op.*\`${nombre}\`.*ambiente`));
+    expect(() => generar(contrato, { x_v1_op: { motivo: 'prueba' } }), nombre).toThrow(/x_v1_op.*ambiente/);
+  }
+  // También en una operación que no recibe ambiente.
+  const sinAmbiente = contratoArmado({
+    parameters: [{ in: 'path', name: 'rut', required: true, schema: { type: 'string' } }],
+    ...conCuerpo({ type: 'object', properties: { ambiente: { type: 'integer' } } }),
+  });
+  expect(() => generar(sinAmbiente, {})).toThrow(/x_v1_op.*`ambiente`/);
+});
+
+test('falla si un grupo de primer nivel se llama como un miembro del cliente', () => {
+  for (const grupo of ['constructor', 'then', 'toString', 'hasOwnProperty', '__proto__']) {
+    expect(() => generar(contratoArmado({ 'x-sdk-group': grupo }), {}), grupo).toThrow(new RegExp(`x_v1_op.*${grupo}`));
+  }
+  // Más abajo no choca: los subgrupos son objetos comunes.
+  expect(() => generar(contratoArmado({ 'x-sdk-group': 'x.then' }), {})).not.toThrow();
+  // `__proto__` no sirve en ningún nivel: en un literal cambia el prototipo en vez de crear la propiedad.
+  expect(() => generar(contratoArmado({ 'x-sdk-group': 'x.__proto__' }), {})).toThrow(/x_v1_op.*__proto__/);
+});
+
+test('MIEMBROS_DEL_CLIENTE cubre los miembros de Enrolamiento y de Object.prototype', () => {
+  for (const nombre of [...Object.getOwnPropertyNames(Enrolamiento.prototype), ...Object.getOwnPropertyNames(Object.prototype)]) {
+    expect(MIEMBROS_DEL_CLIENTE, nombre).toContain(nombre);
+  }
+  expect(MIEMBROS_DEL_CLIENTE).toContain('then');
 });
 
 test('falla si un override nombra una operación que no existe', () => {
@@ -315,7 +369,7 @@ test('resources.ts: un método por operación, con el summary, el operationId y 
   expect(recursos).toContain('@see https://developers.enrolamiento.cl/docs/referencia/');
   expect(recursos).toContain("x_v1_op: ParamsDelContrato<'x_v1_op', { 'X-Consultar-Sii': 'consultarSii' }, 'formato'>;");
   expect(recursos).toContain(
-    "detalleFoliosTodos: (params, opciones) =>\n          nucleo.pedir(OPERACIONES['x_v1_op'], params ?? {}, opciones),",
+    "detalleFoliosTodos: (params, opciones) =>\n          pedir(OPERACIONES['x_v1_op'], params ?? {}, opciones),",
   );
   // `rut` es de ruta: el método exige el objeto de parámetros.
   expect(recursos).toContain("      params: ParamsDe<'x_v1_op'>,");

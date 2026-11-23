@@ -46,6 +46,15 @@ const GLOBALES = new Set([
 ]);
 
 /**
+ * Nombres que un grupo de primer nivel no puede tomar: los miembros de la clase `Enrolamiento` (solo
+ * `constructor`), los de `Object.prototype` y `then` (un cliente con `then` sería una promesa para `await`).
+ * Una prueba comprueba que la lista cubre `Enrolamiento.prototype` y `Object.prototype`.
+ */
+export const MIEMBROS_DEL_CLIENTE = Object.freeze([
+  ...new Set(['constructor', 'then', ...Object.getOwnPropertyNames(Object.prototype)]),
+]);
+
+/**
  * Genera `operations.ts`, `enums.ts`, `resources.ts` y `examples.generated.ts` desde el contrato. Lanza un `Error`
  * que lista todo lo que el contrato tiene y el generador no sabe traducir, con la operación de cada problema.
  * @param {any} contrato el contrato OpenAPI ya parseado
@@ -124,6 +133,7 @@ function resolver(contrato, valor, contexto, errores) {
  * @property {string[]} enRuta
  * @property {string[]} enQuery
  * @property {Record<string, string>} enCabecera
+ * @property {string[]} enCuerpo
  * @property {'ninguno' | 'plano'} cuerpo
  * @property {boolean} idempotente
  * @property {'no' | 'query' | 'ruta'} ambiente
@@ -215,10 +225,11 @@ function leerOperacion(contrato, id, metodo, ruta, item, op, override, errores) 
   if (ambienteEnRuta && ambienteEnQuery) errores.push(`${id}: \`ambiente\` está en la ruta y en la query`);
   /** @type {OperacionLeida['ambiente']} */
   const ambiente = ambienteEnRuta ? 'ruta' : ambienteEnQuery ? 'query' : 'no';
-  const ambienteObligatorio = op['x-sdk-ambiente-obligatorio'] === true;
-  if (ambienteObligatorio && ambiente === 'no') {
+  if (op['x-sdk-ambiente-obligatorio'] === true && ambiente === 'no') {
     errores.push(`${id}: x-sdk-ambiente-obligatorio sin un parámetro \`ambiente\``);
   }
+  // Toda operación que recibe `ambiente` lo exige, la marque el contrato o no: sin él la API opera en producción.
+  const ambienteObligatorio = ambiente !== 'no';
 
   /** @type {OperacionLeida['cuerpo']} */
   let cuerpo = 'ninguno';
@@ -229,6 +240,12 @@ function leerOperacion(contrato, id, metodo, ruta, item, op, override, errores) 
     // Una entrada en los overrides acepta el cuerpo tal como venga: sus problemas no se anotan.
     const erroresDelCuerpo = override === undefined ? errores : [];
     delCuerpo = revisarCuerpo(contrato, id, op.requestBody, [...deRuta, ...deQuery], erroresDelCuerpo);
+    // Esto falla aun con override: una propiedad `Ambiente` haría pasar una errata de `ambiente` por el cuerpo.
+    for (const nombre of delCuerpo) {
+      if (nombre.toLowerCase() === 'ambiente') {
+        errores.push(`${id}: la propiedad del cuerpo \`${nombre}\` se llama como \`ambiente\` (sin distinguir mayúsculas)`);
+      }
+    }
   }
 
   const cabeceras = [...parametros.values()].filter((p) => p.in === 'header').map((p) => String(p.name));
@@ -248,6 +265,7 @@ function leerOperacion(contrato, id, metodo, ruta, item, op, override, errores) 
     enRuta,
     enQuery,
     enCabecera,
+    enCuerpo: delCuerpo,
     cuerpo,
     idempotente: op['x-idempotente'] === true,
     ambiente,
@@ -413,8 +431,9 @@ function leerMetodo(contrato, id, op, parametros, quitados, errores) {
  */
 
 /**
- * Los grupos del cliente con sus métodos. Anota un error si dos operaciones dan el mismo método, o si un método
- * se llama como un grupo del mismo nivel.
+ * Los grupos del cliente con sus métodos. Anota un error si dos operaciones dan el mismo método, si un método
+ * se llama como un grupo del mismo nivel, si un grupo de primer nivel se llama como un miembro del cliente
+ * (`MIEMBROS_DEL_CLIENTE`) o si un grupo o un método se llama `__proto__`.
  * @param {OperacionLeida[]} operaciones
  * @param {string[]} errores
  * @returns {Grupo}
@@ -423,6 +442,15 @@ function armarArbol(operaciones, errores) {
   /** @type {Grupo} */
   const raiz = { grupos: new Map(), metodos: new Map() };
   for (const op of operaciones) {
+    const primero = op.sdk.grupo[0] ?? '';
+    if (MIEMBROS_DEL_CLIENTE.includes(primero)) {
+      errores.push(`${op.id}: el grupo ${primero} se llama como un miembro del cliente`);
+      continue;
+    }
+    if ([...op.sdk.grupo, op.sdk.nombre].includes('__proto__')) {
+      errores.push(`${op.id}: __proto__ no sirve como grupo ni como método`);
+      continue;
+    }
     let grupo = raiz;
     for (const parte of op.sdk.grupo) {
       let hijo = grupo.grupos.get(parte);
@@ -636,14 +664,14 @@ function escribirOperaciones(version, operaciones) {
 
 /**
  * `resources.ts`: los parámetros de cada operación (`ParamsDeOperacion`), la forma del cliente (`Recursos`, con la
- * documentación de cada método) y `recursos(nucleo)`, que la arma.
+ * documentación de cada método) y `recursos(pedir)`, que la arma.
  * @param {OperacionLeida[]} operaciones
  * @param {Grupo} arbol
  */
 function escribirRecursos(operaciones, arbol) {
   const lineas = [
     ENCABEZADO,
-    "import type { Nucleo, OpcionesDePedido, PromesaDeApi } from '../request.js';",
+    "import type { OpcionesDePedido, Pedir, PromesaDeApi } from '../request.js';",
     "import type { ParamsDe, ParamsDelContrato, RespuestaDe } from '../types.js';",
     "import { OPERACIONES } from './operations.js';",
     '',
@@ -674,8 +702,8 @@ function escribirRecursos(operaciones, arbol) {
   lineas.push('}', '');
 
   lineas.push(
-    '/** Arma los grupos de métodos del cliente sobre `nucleo`. */',
-    'export function recursos(nucleo: Nucleo): Recursos {',
+    '/** Arma los grupos de métodos del cliente sobre `pedir`, que envía cada operación. */',
+    'export function recursos(pedir: Pedir): Recursos {',
     '  return {',
   );
   escribirGrupo(arbol, '    ', lineas);
@@ -708,7 +736,7 @@ function escribirFormaDeGrupo(grupo, sangria, lineas) {
 }
 
 /**
- * Los miembros de un grupo en el objeto que devuelve `recursos(nucleo)`.
+ * Los miembros de un grupo en el objeto que devuelve `recursos(pedir)`.
  * @param {Grupo} grupo
  * @param {string} sangria
  * @param {string[]} lineas
@@ -723,7 +751,7 @@ function escribirGrupo(grupo, sangria, lineas) {
     // `?? {}`: quien llama desde JavaScript sin argumentos recibe el ErrorDeConfiguracion del núcleo.
     lineas.push(
       `${sangria}${clave(nombre)}: (params, opciones) =>`,
-      `${sangria}  nucleo.pedir(OPERACIONES[${cadena(op.id)}], params ?? {}, opciones),`,
+      `${sangria}  pedir(OPERACIONES[${cadena(op.id)}], params ?? {}, opciones),`,
     );
   }
 }
