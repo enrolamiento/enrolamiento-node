@@ -51,7 +51,10 @@ export interface EventoPrueba {
  */
 export type EventoDeWebhook = EventoCertificacionFinalizada | EventoRespaldoFinalizado | EventoPrueba;
 
+/** Opciones de `webhooks.verificar`. */
 export interface OpcionesDeVerificacion {
+  /** El secreto de los webhooks del cliente. Por omisión, `ENROLAMIENTO_WEBHOOK_SECRETO`. */
+  secreto?: string;
   /** Diferencia máxima entre `X-Enrolamiento-Fecha` y el reloj, en milisegundos. Por omisión, 300000 (5 minutos). */
   toleranciaMs?: number;
   /** El reloj contra el que se compara la fecha, en milisegundos desde 1970. Por omisión, `Date.now()`. */
@@ -75,7 +78,8 @@ function resolverSecreto(secreto: unknown): string {
   }
   if (!valor) {
     throw new ErrorDeConfiguracion(
-      'Falta el secreto de los webhooks: páselo como argumento o defina ENROLAMIENTO_WEBHOOK_SECRETO en el entorno.',
+      'Falta el secreto de los webhooks: páselo en las opciones (`{ secreto }`) o defina ENROLAMIENTO_WEBHOOK_SECRETO ' +
+        'en el entorno.',
     );
   }
   return valor;
@@ -201,17 +205,27 @@ export const webhooks = {
    * que no reconozca (respóndale con un 2xx e ignórelo), y no la use para afirmar que no puede ocurrir.
    *
    * @param cuerpoCrudo El cuerpo tal como llegó, sin parsear (en un handler estilo fetch, `await request.arrayBuffer()`).
-   * @param secreto Por omisión, `ENROLAMIENTO_WEBHOOK_SECRETO`.
+   * @param cabeceras Las de la entrega: `Headers` o `req.headers` de Node.
+   * @param opciones `secreto` (por omisión, `ENROLAMIENTO_WEBHOOK_SECRETO`), `toleranciaMs` y `ahora`.
    */
   verificar(
     cuerpoCrudo: string | Uint8Array | ArrayBuffer,
     cabeceras: CabecerasDeWebhook,
-    secreto?: string,
-    opciones?: OpcionesDeVerificacion | null,
+    opciones?: OpcionesDeVerificacion,
   ): EventoDeWebhook {
     return sinErroresAjenos('verificar', () => {
+      // `null` vale como sin opciones. Un texto es la firma anterior (el secreto como tercer argumento): se rechaza
+      // en vez de ignorarlo y caer al secreto del entorno.
+      const deVerificacion: unknown = opciones ?? {};
+      if (typeof deVerificacion !== 'object' || Array.isArray(deVerificacion)) {
+        throw new ErrorDeConfiguracion(
+          'webhooks.verificar: el tercer argumento es un objeto de opciones, `{ secreto, toleranciaMs, ahora }`; ' +
+            'el secreto va en `{ secreto }`.',
+        );
+      }
+      const { secreto, ...ventanaPedida } = deVerificacion as OpcionesDeVerificacion;
       const clave = resolverSecreto(secreto);
-      const ventana = resolverVentana(opciones ?? {});
+      const ventana = resolverVentana(ventanaPedida);
       const bytes = bytesDelCuerpo(cuerpoCrudo);
       const fecha = exigirCabecera(cabeceras, CABECERA_FECHA);
       const firma = exigirCabecera(cabeceras, CABECERA_FIRMA);

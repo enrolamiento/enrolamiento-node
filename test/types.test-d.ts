@@ -8,6 +8,7 @@ import Enrolamiento, {
   type EventoPrueba,
   type IdDeOperacion,
   type OpcionesDePedido,
+  type OpcionesDeVerificacion,
   type ParamsDe,
   type PromesaDeApi,
   type Respaldo,
@@ -183,4 +184,14 @@ test('el cliente no expone `pedir` ni otro método del núcleo', () => {
 test('Enrolamiento también se exporta con nombre, e IdDeOperacion es un tipo público', () => {
   expectTypeOf(EnrolamientoConNombre).toEqualTypeOf(Enrolamiento);
   expectTypeOf<'caf_v1_descargar'>().toExtend<IdDeOperacion>();
+});
+
+test('webhooks.verificar recibe el secreto en las opciones, no como tercer argumento suelto', () => {
+  expectTypeOf(webhooks.verificar).toBeCallableWith('', {});
+  expectTypeOf(webhooks.verificar).toBeCallableWith('', {}, { secreto: 's', toleranciaMs: 1000, ahora: 0 });
+  expectTypeOf<OpcionesDeVerificacion>().toEqualTypeOf<{ secreto?: string; toleranciaMs?: number; ahora?: number }>();
+  // @ts-expect-error el secreto va en `{ secreto }`
+  expectTypeOf(webhooks.verificar).toBeCallableWith('', {}, 's');
+  // @ts-expect-error no hay cuarto argumento
+  expectTypeOf(webhooks.verificar).toBeCallableWith('', {}, {}, {});
 });

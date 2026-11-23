@@ -41,7 +41,7 @@ function cabecerasDe(cuerpo: string, secreto = SECRETO, fecha = FECHA): Record<s
 
 /** `secreto` en `null` llama a `verificar` sin secreto. */
 function verificar(cuerpo: unknown, cabeceras: unknown, secreto: string | null = SECRETO): EventoDeWebhook {
-  return webhooks.verificar(cuerpo as string, cabeceras as Headers, secreto ?? undefined, { ahora: AHORA });
+  return webhooks.verificar(cuerpo as string, cabeceras as Headers, { secreto: secreto ?? undefined, ahora: AHORA });
 }
 
 function errorDe(fn: () => unknown): Error {
@@ -88,7 +88,7 @@ describe('webhooks.verificar', () => {
 
   test('sin `ahora` compara contra el reloj real', () => {
     const fecha = new Date().toISOString();
-    expect(webhooks.verificar(CUERPO, cabecerasDe(CUERPO, SECRETO, fecha), SECRETO)).toEqual(CERTIFICACION);
+    expect(webhooks.verificar(CUERPO, cabecerasDe(CUERPO, SECRETO, fecha), { secreto: SECRETO })).toEqual(CERTIFICACION);
   });
 
   test('toma el secreto de ENROLAMIENTO_WEBHOOK_SECRETO si no se pasa', () => {
@@ -200,7 +200,7 @@ describe('webhooks.verificar', () => {
       [CUERPO, () => verificar(CERTIFICACION, cabeceras)],
       [CUERPO, () => verificar(CUERPO, { ...cabeceras, 'X-Enrolamiento-Firma': 'sha256=00' })],
       ['no es json', () => verificar('no es json', cabecerasDe('no es json'))],
-      [CUERPO, () => webhooks.verificar(CUERPO, cabeceras, SECRETO, { ahora: AHORA + 3_600_000 })],
+      [CUERPO, () => webhooks.verificar(CUERPO, cabeceras, { secreto: SECRETO, ahora: AHORA + 3_600_000 })],
       [CUERPO, () => verificar(CUERPO, cabecerasDe(CUERPO, SECRETO, 'ayer'))],
       [CUERPO, () => verificar(CUERPO, { 'X-Enrolamiento-Firma': firma })],
       [CUERPO, () => verificar(CUERPO, { ...cabeceras, 'X-Enrolamiento-Firma': undefined })],
@@ -219,26 +219,26 @@ describe('webhooks.verificar', () => {
   test('más de 5 minutos de diferencia: ErrorDeFirma que nombra el reloj', () => {
     const cabeceras = cabecerasDe(CUERPO);
     const cincoMinutos = 300_000;
-    expect(webhooks.verificar(CUERPO, cabeceras, SECRETO, { ahora: AHORA + cincoMinutos })).toEqual(CERTIFICACION);
-    expect(webhooks.verificar(CUERPO, cabeceras, SECRETO, { ahora: AHORA - cincoMinutos })).toEqual(CERTIFICACION);
+    expect(webhooks.verificar(CUERPO, cabeceras, { secreto: SECRETO, ahora: AHORA + cincoMinutos })).toEqual(CERTIFICACION);
+    expect(webhooks.verificar(CUERPO, cabeceras, { secreto: SECRETO, ahora: AHORA - cincoMinutos })).toEqual(CERTIFICACION);
 
     for (const ahora of [AHORA + cincoMinutos + 1, AHORA - cincoMinutos - 1]) {
-      const e = errorDe(() => webhooks.verificar(CUERPO, cabeceras, SECRETO, { ahora }));
+      const e = errorDe(() => webhooks.verificar(CUERPO, cabeceras, { secreto: SECRETO, ahora }));
       expect(e).toBeInstanceOf(ErrorDeFirma);
       expect(e.message).toMatch(/reloj/);
     }
 
     // La tolerancia se puede cambiar.
     expect(() =>
-      webhooks.verificar(CUERPO, cabeceras, SECRETO, { ahora: AHORA + 2_000, toleranciaMs: 1_000 }),
+      webhooks.verificar(CUERPO, cabeceras, { secreto: SECRETO, ahora: AHORA + 2_000, toleranciaMs: 1_000 }),
     ).toThrow(/reloj/);
-    expect(webhooks.verificar(CUERPO, cabeceras, SECRETO, { ahora: AHORA + 600_000, toleranciaMs: 900_000 })).toEqual(
+    expect(webhooks.verificar(CUERPO, cabeceras, { secreto: SECRETO, ahora: AHORA + 600_000, toleranciaMs: 900_000 })).toEqual(
       CERTIFICACION,
     );
 
     // Con las opciones por omisión y el reloj real, una entrega de hace una hora se rechaza.
     const haceUnaHora = new Date(Date.now() - 3_600_000).toISOString();
-    expect(() => webhooks.verificar(CUERPO, cabecerasDe(CUERPO, SECRETO, haceUnaHora), SECRETO)).toThrow(/reloj/);
+    expect(() => webhooks.verificar(CUERPO, cabecerasDe(CUERPO, SECRETO, haceUnaHora), { secreto: SECRETO })).toThrow(/reloj/);
   });
 
   test('una tolerancia o un reloj que no es un número finito: ErrorDeConfiguracion, no una ventana abierta', () => {
@@ -251,16 +251,25 @@ describe('webhooks.verificar', () => {
       { ahora: Number.NaN },
       { ahora: Number.POSITIVE_INFINITY },
     ]) {
-      const e = errorDe(() => webhooks.verificar(CUERPO, viejas, SECRETO, opciones));
+      const e = errorDe(() => webhooks.verificar(CUERPO, viejas, { secreto: SECRETO, ...opciones }));
       expect(e, JSON.stringify(opciones)).toBeInstanceOf(ErrorDeConfiguracion);
     }
-    expect(webhooks.verificar(CUERPO, cabecerasDe(CUERPO), SECRETO, { ahora: AHORA, toleranciaMs: 0 })).toEqual(CERTIFICACION);
+    expect(webhooks.verificar(CUERPO, cabecerasDe(CUERPO), { secreto: SECRETO, ahora: AHORA, toleranciaMs: 0 })).toEqual(CERTIFICACION);
+  });
+
+  test('el tercer argumento es el objeto de opciones: un texto (la firma vieja) lanza ErrorDeConfiguracion sin copiarlo', () => {
+    for (const opciones of [SECRETO, 5, true]) {
+      const e = errorDe(() => webhooks.verificar(CUERPO, cabecerasDe(CUERPO), opciones as never));
+      expect(e, String(opciones)).toBeInstanceOf(ErrorDeConfiguracion);
+      expect(e.message).toMatch(/secreto/);
+      expect(e.message).not.toContain(SECRETO);
+    }
   });
 
   test('opciones null valen como ausentes', () => {
     vi.stubEnv('ENROLAMIENTO_WEBHOOK_SECRETO', SECRETO);
     const cabeceras = cabecerasDe(CUERPO, SECRETO, new Date().toISOString());
-    expect(webhooks.verificar(CUERPO, cabeceras, undefined, null as never).evento).toBe('certificacion.finalizada');
+    expect(webhooks.verificar(CUERPO, cabeceras, null as never).evento).toBe('certificacion.finalizada');
   });
 
   test('argumentos con otra forma lanzan ErrorDeConfiguracion sin copiar valores, no un TypeError', () => {
@@ -269,7 +278,7 @@ describe('webhooks.verificar', () => {
       expect(e, String(cabeceras)).toBeInstanceOf(ErrorDeConfiguracion);
       expect(e.message).not.toContain(SECRETO);
     }
-    const secretoRaro = errorDe(() => webhooks.verificar(CUERPO, cabecerasDe(CUERPO), 12345 as never, { ahora: AHORA }));
+    const secretoRaro = errorDe(() => webhooks.verificar(CUERPO, cabecerasDe(CUERPO), { secreto: 12345 as never, ahora: AHORA }));
     expect(secretoRaro).toBeInstanceOf(ErrorDeConfiguracion);
     expect(secretoRaro.message).not.toContain('12345');
     const cuerpoRaro = errorDe(() => webhooks.firmar({ clave: 'cuerpo-secreto' } as never, SECRETO));
