@@ -29,10 +29,15 @@
     "typecheck": "tsc -p tsconfig.test.json"
   },
   "devDependencies": {
-    "@stoplight/prism-cli": "5.16.0",
+    "@stoplight/prism-cli": "5.14.2",
     "@types/node": "22.20.5",
     "openapi-typescript": "7.13.0",
     "typescript": "5.9.3",
     "vitest": "5.1.1"
+  },
+  "overrides": {
+    "@stoplight/prism-core": "5.8.0",
+    "@stoplight/prism-http": "5.12.0",
+    "@stoplight/prism-http-server": "5.12.0"
   }
 }
