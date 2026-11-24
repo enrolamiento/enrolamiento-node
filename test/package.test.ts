@@ -77,7 +77,9 @@ test('la integración continua prueba el piso documentado de Node, 22.12.0', () 
 });
 
 test('el binario `enrolamiento` apunta al CLI compilado, que no es parte de la librería', () => {
-  expect(PAQUETE.bin).toEqual({ enrolamiento: './dist/cli.js' });
+  // Sin `./` adelante: con él, npm avisa al publicar que el `bin` «was invalid and removed» y lo saca de lo que
+  // el registro anota del paquete, y `npx enrolamiento` deja de encontrar el comando.
+  expect(PAQUETE.bin).toEqual({ enrolamiento: 'dist/cli.js' });
   expect(archivos).toContain('dist/cli.js');
   expect(readFileSync('dist/cli.js', 'utf8').startsWith('#!/usr/bin/env node\n')).toBe(true);
   // Solo el punto de entrada: quien importa la librería no carga el CLI, y un bundler lo puede descartar.
@@ -87,6 +89,13 @@ test('el binario `enrolamiento` apunta al CLI compilado, que no es parte de la l
     expect(readFileSync(ruta, 'utf8'), ruta).not.toMatch(/from '\.\.?\/cli(?:\.js|\/)/);
   }
 });
+
+test('npm no corrige nada del package.json al publicar', () => {
+  // `--dry-run` arma la publicación sin enviarla. Lo que npm corrija ahí es lo que el registro anotaría distinto.
+  const corrida = spawnSync('npm', ['publish', '--dry-run', '--ignore-scripts'], { encoding: 'utf8' });
+  expect(corrida.stderr).not.toMatch(/auto-corrected|errors corrected|was invalid/);
+  expect(corrida.status).toBe(0);
+}, 60000);
 
 test('sin dependencias de runtime', () => {
   expect(Object.keys(PAQUETE.dependencies ?? {})).toEqual([]);
