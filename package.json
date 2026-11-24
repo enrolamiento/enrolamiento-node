@@ -1,6 +1,6 @@
 {
   "name": "enrolamiento",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "SDK oficial de la API de Enrolamiento para Node: certificaciones ante el SII, CAF, certificados, empresas, portabilidad y respaldos, con errores tipados, reintentos según el contrato y verificación de webhooks.",
   "keywords": [
     "enrolamiento",
@@ -32,13 +32,18 @@
       "default": "./dist/index.js"
     }
   },
+  "bin": {
+    "enrolamiento": "./dist/cli.js"
+  },
   "files": [
     "dist",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/cli.js"
+  ],
   "scripts": {
     "contract:pull": "node scripts/pull-contract.mjs",
     "generate": "node scripts/generate.mjs",

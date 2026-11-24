@@ -138,7 +138,8 @@ antes de llamar a la API es `ErrorDeConfiguracion`. Ningún mensaje copia el tex
 dice solo su largo; sí nombra las claves y muestra los números). La excepción es un `fetch` propio que no
 devuelva una `Response`: lo que eso provoque sale tal cual. Cuando la API respondió con un status que no es 2xx, el
 error hereda además de `ErrorDeApi`, con `status`, `codigo`, `subcodigo`, `mensaje`, `reintentable` (la cabecera
-`X-Reintentable`), `cabeceras`, `cuerpo` y `operacion`.
+`X-Reintentable`), `cabeceras`, `cuerpo`, `operacion` y `urlDeAyuda`: la dirección donde la guía explica ese
+`codigo` y qué hacer con él.
 
 | Clase | Cuándo |
 |---|---|
@@ -305,6 +306,62 @@ createServer((req, res) => {
 
 `webhooks.firmar(cuerpo, secreto, fecha?)` firma un cuerpo como lo hace la API, para probar su receptor: devuelve
 `X-Enrolamiento-Fecha` y `X-Enrolamiento-Firma`. La fecha es, por omisión, la hora actual.
+
+## Línea de comandos
+
+El paquete trae el comando `enrolamiento`, con dos herramientas para integrar. Es **experimental**: sus opciones y
+su salida pueden cambiar en una versión menor. Ningún comando escribe en la API ni guarda credenciales.
+
+### Probar su receptor de webhooks
+
+Enrolamiento entrega solo a direcciones `https` públicas, así que un receptor en desarrollo no recibe avisos
+reales. `webhooks probar` le envía, en su máquina, avisos firmados como los firma Enrolamiento: los de cada evento,
+con y sin respaldo y en cada estado del respaldo, que debe aceptar con un 2xx en menos de 10 segundos, y cuatro
+que debe rechazar (firmado con otro
+secreto, con el cuerpo alterado, con una fecha de hace 10 minutos y sin firma). Sirve para un receptor escrito en
+cualquier lenguaje.
+
+```sh
+ENROLAMIENTO_WEBHOOK_SECRETO=secreto-de-prueba npx enrolamiento webhooks probar --url http://localhost:3000
+```
+
+```text
+Receptor: http://localhost:3000/
+
+Avisos que debe aceptar (2xx):
+  ok     prueba                             204      4 ms
+  ok     certificacion-sin-respaldo         204      1 ms
+  …
+Avisos que debe rechazar:
+  ok     firma-de-otro-secreto              401      1 ms
+  FALLA  fecha-vencida                      204      1 ms  aceptó un aviso que no viene de Enrolamiento: verifique la firma y la fecha
+  …
+14 de 15 casos respondieron como se esperaba.
+```
+
+- El secreto se lee solo de `ENROLAMIENTO_WEBHOOK_SECRETO`, con el mismo valor con el que corre su receptor. Para
+  probar puede ser cualquier texto: no hace falta el secreto real.
+- Sale con 0 si todos los casos respondieron como se esperaba y con 1 si alguno no: sirve en su integración
+  continua. `--json` imprime el resultado como JSON, también cuando no logra conectar (`"conecto": false`).
+- `--caso <nombre>` corre uno solo (se puede repetir) y `--listar` muestra los nombres.
+- Una dirección que no es `localhost`, `127.x.x.x` ni `[::1]` exige `--permitir-remoto`: un receptor real
+  procesaría estos avisos como verdaderos.
+- El caso `repetida` envía dos veces la misma entrega, como en un reintento: el mismo cuerpo y el mismo `id`, con
+  otra fecha y otra firma. Desde afuera no se ve si su receptor la procesó una o dos
+  veces: revíselo en su registro.
+
+### Comprobar la configuración
+
+```sh
+node --env-file=.env node_modules/enrolamiento/dist/cli.js doctor
+```
+
+`doctor` revisa la versión de Node, que estén `ENROLAMIENTO_USUARIO` y `ENROLAMIENTO_APIKEY`, que la API los
+acepte (con una lectura de su cuenta, sin RUT ni `ambiente`), que el reloj no difiera más de lo que toleran los
+webhooks y la forma de `ENROLAMIENTO_WEBHOOK_SECRETO`. Sale con 1 si algo falla.
+
+Ningún comando imprime una credencial, y un mensaje de uso tampoco repite lo que usted escribió: un secreto pegado
+en el lugar equivocado no termina en la consola ni en el registro de su integración continua.
 
 ## Crear una sesión del widget
 

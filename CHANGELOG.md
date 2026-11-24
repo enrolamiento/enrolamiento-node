@@ -4,6 +4,22 @@ Todos los cambios relevantes de este paquete se anotan aquí. El formato sigue
 [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y las versiones siguen
 [Versionado Semántico](https://semver.org/lang/es/).
 
+## 0.2.0 - 2026-11-23
+
+### Agregado
+
+- `urlDeAyuda` en los errores de la API (`ErrorDeApi` y sus subclases): la dirección de la entrada de `codigo` en
+  el catálogo de la guía «Errores y reintentos», o la guía misma si el error no trae código.
+- Línea de comandos `enrolamiento`, incluida en el paquete (`npx enrolamiento`). **Experimental**: los comandos,
+  sus opciones y su salida pueden cambiar en una versión menor.
+  - `enrolamiento webhooks probar`: envía a un receptor local avisos firmados como los firma Enrolamiento, los
+    que debe aceptar y los que debe rechazar (firma de otro secreto, cuerpo alterado, fecha vencida, sin firma), y
+    sale con 1 si alguno no responde como se espera. Sirve para un receptor en cualquier lenguaje.
+  - `enrolamiento doctor`: comprueba la versión de Node, las credenciales (con una lectura), el reloj y el
+    secreto de los webhooks.
+
+  Ningún comando escribe en la API ni guarda credenciales, y el secreto y la APIKey se leen solo del entorno.
+
 ## 0.1.0 - 2026-11-23
 
 Primera versión, generada de la versión **1.15.0** del contrato OpenAPI de la API de Enrolamiento.

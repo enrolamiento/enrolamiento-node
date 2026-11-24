@@ -41,6 +41,8 @@ export interface DatosDeErrorDeApi {
   cuerpo: string;
 }
 
+const GUIA_DE_ERRORES = 'https://developers.enrolamiento.cl/docs/errores-y-reintentos/';
+
 /** La API respondió con un status que no es 2xx. Las subclases dicen de qué familia es. */
 export class ErrorDeApi extends EnrolamientoError {
   override name = 'ErrorDeApi';
@@ -59,6 +61,11 @@ export class ErrorDeApi extends EnrolamientoError {
   readonly cuerpo: string;
   /** `operationId` de la operación que se llamó. */
   readonly operacion: string;
+  /**
+   * Dónde leer qué hacer con este error: la entrada de `codigo` en el catálogo de la guía «Errores y reintentos»,
+   * o la guía misma si el error no trae código.
+   */
+  readonly urlDeAyuda: string;
 
   constructor(datos: DatosDeErrorDeApi) {
     const codigo = datos.codigo === null ? '' : ` ${datos.codigo}${datos.subcodigo === null ? '' : `:${datos.subcodigo}`}`;
@@ -71,6 +78,7 @@ export class ErrorDeApi extends EnrolamientoError {
     this.cabeceras = datos.cabeceras;
     this.cuerpo = datos.cuerpo;
     this.operacion = datos.operacion;
+    this.urlDeAyuda = datos.codigo === null ? GUIA_DE_ERRORES : `${GUIA_DE_ERRORES}#error-${encodeURIComponent(datos.codigo)}`;
   }
 }
 

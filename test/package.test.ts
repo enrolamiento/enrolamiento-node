@@ -76,6 +76,18 @@ test('la integración continua prueba el piso documentado de Node, 22.12.0', () 
   expect(matriz.split(',').map((version) => version.trim().replace(/^['"]|['"]$/g, ''))).toContain('22.12.0');
 });
 
+test('el binario `enrolamiento` apunta al CLI compilado, que no es parte de la librería', () => {
+  expect(PAQUETE.bin).toEqual({ enrolamiento: './dist/cli.js' });
+  expect(archivos).toContain('dist/cli.js');
+  expect(readFileSync('dist/cli.js', 'utf8').startsWith('#!/usr/bin/env node\n')).toBe(true);
+  // Solo el punto de entrada: quien importa la librería no carga el CLI, y un bundler lo puede descartar.
+  expect(Object.keys(PAQUETE.exports)).toEqual(['.']);
+  expect(PAQUETE.sideEffects).toEqual(['./dist/cli.js']);
+  for (const ruta of archivos.filter((r) => r.startsWith('dist/') && r.endsWith('.js') && !r.startsWith('dist/cli'))) {
+    expect(readFileSync(ruta, 'utf8'), ruta).not.toMatch(/from '\.\.?\/cli(?:\.js|\/)/);
+  }
+});
+
 test('sin dependencias de runtime', () => {
   expect(Object.keys(PAQUETE.dependencies ?? {})).toEqual([]);
   expect(Object.keys(PAQUETE.peerDependencies ?? {})).toEqual([]);
@@ -113,6 +125,17 @@ test('un proyecto que instala el .tgz lo carga con import y con require()', () =
     join(proyecto, 'por-omision.mjs'),
     "import Enrolamiento from 'enrolamiento';\nconsole.log(typeof Enrolamiento === 'function' ? 'ok' : 'mal');",
   );
+
+  // El binario instalado corre: la versión, y un comando que no existe sale con 2.
+  const binario = join(proyecto, 'node_modules', '.bin', 'enrolamiento');
+  const version = spawnSync(binario, ['--version'], { cwd: proyecto, encoding: 'utf8' });
+  expect({ status: version.status, salida: version.stdout.trim() }).toEqual({
+    status: 0,
+    salida: expect.stringMatching(new RegExp(`^${PAQUETE.version.replaceAll('.', '\\.')} \\(contrato `)),
+  });
+  expect(spawnSync(binario, ['no-existe'], { cwd: proyecto, encoding: 'utf8' }).status).toBe(2);
+  const casos = spawnSync(binario, ['webhooks', 'probar', '--listar', '--json'], { cwd: proyecto, encoding: 'utf8' });
+  expect(JSON.parse(casos.stdout).length).toBeGreaterThan(10);
 
   for (const archivo of ['esm.mjs', 'por-omision.mjs', 'cjs.cjs', 'con-nombre.cjs']) {
     const corrida = spawnSync(process.execPath, [archivo], { cwd: proyecto, encoding: 'utf8' });

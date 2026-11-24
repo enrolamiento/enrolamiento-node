@@ -181,6 +181,27 @@ describe('propiedades comunes de ErrorDeApi', () => {
   });
 });
 
+describe('urlDeAyuda', () => {
+  const GUIA = 'https://developers.enrolamiento.cl/docs/errores-y-reintentos/';
+
+  test('con código, apunta a su entrada del catálogo, venga de la cabecera o del cuerpo', () => {
+    expect(clasificar(500, 'CERT_EXPIRADO:Vencido', { 'X-Codigo-Error': 'CERT_EXPIRADO' }).urlDeAyuda).toBe(`${GUIA}#error-CERT_EXPIRADO`);
+    expect(clasificar(500, 'SII_ERROR_CXN:SUB:No hay conexión').urlDeAyuda).toBe(`${GUIA}#error-SII_ERROR_CXN`);
+  });
+
+  test('sin código, apunta a la guía', () => {
+    for (const e of [clasificar(409, ''), clasificar(401, ''), clasificar(504, ''), clasificar(500, '{"Message":"x"}'), clasificar(500, 'texto')]) {
+      expect(e.urlDeAyuda).toBe(GUIA);
+    }
+  });
+
+  test('un código con caracteres raros en la cabecera no rompe la dirección', () => {
+    const url = clasificar(500, 'x', { 'X-Codigo-Error': 'A B#C' }).urlDeAyuda;
+    expect(url).toBe(`${GUIA}#error-A%20B%23C`);
+    expect(new URL(url).hash).toBe('#error-A%20B%23C');
+  });
+});
+
 describe('errores sin respuesta de la API', () => {
   test('ErrorDeConfiguracion lleva el mensaje dado', () => {
     const e = new ErrorDeConfiguracion('Falta ENROLAMIENTO_APIKEY');
