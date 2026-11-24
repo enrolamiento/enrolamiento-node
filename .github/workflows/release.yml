@@ -1,8 +1,13 @@
 name: Release
 
-# Publishes to npm when a version tag is pushed. Authentication is npm trusted publishing
+# Stages a version on npm when a version tag is pushed. Authentication is npm trusted publishing
 # (OIDC): there is no token in this repository. The trusted publisher is configured on
 # npmjs.com for this repository and this workflow file name; renaming the file breaks it.
+#
+# The workflow does not release anything by itself: `npm stage publish` leaves the version
+# staged, and a maintainer approves it with 2FA on npmjs.com (package page, "Staged Packages").
+# The trusted publisher is not allowed to run `npm publish` directly, so a compromised workflow
+# cannot put a version in front of users.
 on:
   push:
     tags:
@@ -18,7 +23,7 @@ concurrency:
 
 jobs:
   publish:
-    name: Publish to npm
+    name: Stage on npm
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -26,7 +31,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: 24 # trusted publishing needs Node >= 22.14 and npm >= 11.5.1
+          node-version: 24 # staged publishing needs Node >= 22.14 and npm >= 11.15.0
           registry-url: 'https://registry.npmjs.org'
       - name: The tag is the version in package.json
         run: |
@@ -35,9 +40,9 @@ jobs:
             echo "::error::The tag $GITHUB_REF_NAME does not match package.json version $version."
             exit 1
           fi
-      - name: npm is recent enough for trusted publishing
+      - name: npm is recent enough for staged publishing
         run: |
-          node -e "const [a,b,c]=process.argv[1].split('.').map(Number); if (a<11||(a===11&&(b<5||(b===5&&c<1)))) { console.error('npm '+process.argv[1]+' is older than 11.5.1'); process.exit(1) }" "$(npm --version)"
+          node -e "const [a,b,c]=process.argv[1].split('.').map(Number); if (a<11||(a===11&&b<15)) { console.error('npm '+process.argv[1]+' is older than 11.15.0'); process.exit(1) }" "$(npm --version)"
       - run: npm ci --ignore-scripts
       - name: Generated code matches the contract
         run: npm run generate && git diff --exit-code src/generated test/smoke/examples.generated.ts
@@ -46,4 +51,4 @@ jobs:
       - run: npm run test:smoke
       - run: npm run check:package
       - run: npm run test:package
-      - run: npm publish --access public
+      - run: npm stage publish --access public

@@ -507,6 +507,9 @@ flujos programados de un repositorio público sin actividad durante 60 días: si
 1. Suba `version` en `package.json` y `src/version.ts` (una prueba exige que coincidan) y agregue su entrada en
    `CHANGELOG.md`.
 2. Con la integración continua en verde sobre `main`, etiquete el commit: `git tag vX.Y.Z && git push origin vX.Y.Z`.
-3. El flujo `Release` vuelve a correr todas las pruebas y publica en npm. No usa ningún token: se autentica con
-   la publicación de confianza de npm (OIDC), configurada en npmjs.com para este repositorio y para el archivo
-   `release.yml`. Renombrar ese archivo la rompe.
+3. El flujo `Release` vuelve a correr todas las pruebas y deja la versión **en espera** en npm, con
+   `npm stage publish`. No usa ningún token: se autentica con la publicación de confianza de npm (OIDC),
+   configurada en npmjs.com para este repositorio y para el archivo `release.yml`. Renombrar ese archivo la rompe.
+4. Un mantenedor la aprueba con su segundo factor en npmjs.com, en la página del paquete, pestaña
+   **Staged Packages**. Hasta entonces la versión no existe para quien instala. La publicación de confianza no
+   tiene permiso para `npm publish` directo: el flujo solo no puede poner una versión frente a los usuarios.
